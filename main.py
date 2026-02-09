@@ -305,6 +305,192 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # functions with the ones above.
 
 # ==========================================
-# 7. Main Runner
+# 7. মেইন রানার (UPDATED)
 # ==========================================
-# (Use the same main runner from the input)
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is Alive & Running!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+def run_flask():
+    # Render বা অন্যান্য ক্লাউড পোর্টে রান করার জন্য
+    try:
+        print(f"🌐 Starting Web Server on Port {PORT}")
+        app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    except Exception as e:
+        logger.error(f"Flask Server Error: {e}")
+
+def main():
+    # ১. প্রথমে ওয়েব সার্ভার স্টার্ট করুন (Backgroud Thread)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # ২. এরপর টেলিগ্রাম বট স্টার্ট করুন
+    application = ApplicationBuilder().token(TOKEN).build()
+
+    # কমান্ড হ্যান্ডলার
+    application.add_handler(CommandHandler("start", start))
+    
+    # এডমিন প্যানেল হ্যান্ডলার
+    application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+    application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log)$"))
+
+    # রিপোর্ট হ্যান্ডলার
+    application.add_handler(CallbackQueryHandler(admin_reports_menu, pattern="^adm_reports$"))
+    application.add_handler(CallbackQueryHandler(admin_reports_apps_selection, pattern="^rep_apps$"))
+    application.add_handler(CallbackQueryHandler(admin_show_app_timeframes, pattern="^sel_rep_app_"))
+    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|repex_.*)$"))
+
+    # বাটন এডিট হ্যান্ডলার
+    application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
+    application.add_handler(CallbackQueryHandler(button_action_handler, pattern="^(btntog_|btnren_)"))
+
+    # একশন হ্যান্ডলার
+    application.add_handler(CallbackQueryHandler(handle_withdrawal_action, pattern="^wd_(apr|rej)_"))
+    application.add_handler(CallbackQueryHandler(handle_task_action, pattern="^t_(apr|rej)_"))
+
+    # টাস্ক সাবমিশন কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_task_submission, pattern="^submit_task$")],
+        states={
+            T_APP_SELECT: [CallbackQueryHandler(app_selected, pattern="^sel_")],
+            T_REVIEW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_name)],
+            T_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
+            T_DEVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_device)],
+            T_SS: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, save_task)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
+    ))
+
+    # উইথড্রয়াল কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(withdraw_start, pattern="^start_withdraw$")],
+        states={
+            WD_METHOD: [CallbackQueryHandler(withdraw_method, pattern="^m_(bkash|nagad)$|^cancel$")],
+            WD_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_number)],
+            WD_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
+    ))
+
+    # অ্যাপ অ্যাড কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_app_start, pattern="^add_app$")],
+        states={
+            ADD_APP_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_id)],
+            ADD_APP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_name)],
+            ADD_APP_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_limit)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # অ্যাপ লিমিট এডিট কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_app_limit_start, pattern="^edit_app_limit_start$")],
+        states={
+            EDIT_APP_SELECT: [CallbackQueryHandler(edit_app_limit_select, pattern="^edlim_")],
+            EDIT_APP_LIMIT_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_app_limit_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # রিমুভ অ্যাপ কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(rmv_app_start, pattern="^rmv_app$")],
+        states={REMOVE_APP_SELECT: [CallbackQueryHandler(rmv_app_sel)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # ইউজার ম্যানেজ কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(find_user_start, pattern="^find_user$")],
+        states={
+            ADMIN_USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_user_result)],
+            ADMIN_USER_ACTION: [CallbackQueryHandler(user_action_handler, pattern="^(u_add_bal|u_cut_bal|u_toggle_block|u_toggle_admin)$|^cancel$")],
+            ADMIN_USER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_balance_update)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # টেক্সট এডিট কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_rules|ed_txt_schedule|ed_txt_referral_bonus)$"),
+            CallbackQueryHandler(button_action_handler, pattern="^btnren_")
+        ],
+        states={
+            ADMIN_EDIT_TEXT_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text_save)],
+            ADMIN_EDIT_BTN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, button_rename_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # কাস্টম বাটন অ্যাড কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_custom_btn_start, pattern="^add_cus_btn$")],
+        states={
+            ADMIN_ADD_BTN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_link)],
+            ADMIN_ADD_BTN_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # রিমুভ কাস্টম বাটন কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(rmv_custom_btn_start, pattern="^rmv_cus_btn$")],
+        states={
+            REMOVE_CUS_BTN: [CallbackQueryHandler(rmv_custom_btn_handle, pattern="^rm_cus_btn_")]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # টাইম সেটিং কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(set_time_start_handler, pattern="^set_time_start$")],
+        states={ADMIN_SET_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_start_save)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(set_time_end_handler, pattern="^set_time_end$")],
+        states={ADMIN_SET_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_end_save)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # এডমিন অ্যাড/রিমুভ কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_admin_start, pattern="^add_new_admin$")],
+        states={ADMIN_ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_save)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(rmv_admin_start, pattern="^rmv_admin_role$")],
+        states={ADMIN_RMV_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, rmv_admin_save)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # লগ চ্যানেল কনভারসেশন
+    application.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(set_log_start, pattern="^set_log_id$")],
+        states={ADMIN_SET_LOG_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_log_save)]},
+        fallbacks=[CallbackQueryHandler(cancel_conv)]
+    ))
+
+    # সাধারণ কলব্যাক হ্যান্ডলার
+    application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule)$"))
+
+    # ৩. অটোমেশন থ্রেড
+    automation_thread = threading.Thread(target=run_automation, daemon=True)
+    automation_thread.start()
+
+    print("🚀 Bot Started on Render...")
+    # Polling চালু করা (এটি লুপে চলবে)
+    application.run_polling(drop_pending_updates=True)
+
+if __name__ == '__main__':
+    main()
