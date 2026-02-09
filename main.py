@@ -49,7 +49,7 @@ FIREBASE_JSON = os.environ.get("FIREBASE_CREDENTIALS", "firebase_key.json")
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
 IMGBB_API_KEY = os.environ.get('IMGBB_API_KEY', "")
 PORT = int(os.environ.get("PORT", 8080))
-WEB_URL = os.environ.get("WEB_URL", "https://your-domain.com")
+WEB_URL = os.environ.get("WEB_URL", "https://sites.google.com/view/review-work/home")
 
 # Gemini AI সেটআপ
 model = None
