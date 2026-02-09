@@ -265,13 +265,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     web_password = create_user(user.id, user.first_name, referrer)
     
     if web_password:
-        password_msg = (
-            f"🔐 **আপনার ওয়েব পাসওয়ার্ড:** `{web_password}`\n\n"
-            f"🌐 **ওয়েব ড্যাশবোর্ড লিংক:** {WEB_URL}\n\n"
-            f"📱 টেলিগ্রাম আইডি: `{user.id}`\n"
-            f"🔑 পাসওয়ার্ড: `{web_password}`\n\n"
-            f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!"
-        )
+        password_msg = 
         
         try:
             await context.bot.send_message(
