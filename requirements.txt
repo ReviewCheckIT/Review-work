@@ -1,7 +1,7 @@
-python-telegram-bot>=20.0
-firebase-admin
-google-play-scraper
-google-generativeai
-flask
-requests
-gunicorn
+python-telegram-bot==21.4
+firebase-admin==6.5.0
+google-play-scraper==1.2.7
+google-generativeai==0.7.2
+flask==3.0.3
+requests==2.32.3
+gunicorn==22.0.0
