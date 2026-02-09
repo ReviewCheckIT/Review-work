@@ -6,6 +6,7 @@ import time
 import asyncio
 import csv
 import io
+import random
 from datetime import datetime, timedelta
 import requests
 import firebase_admin
@@ -48,6 +49,7 @@ FIREBASE_JSON = os.environ.get("FIREBASE_CREDENTIALS", "firebase_key.json")
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
 IMGBB_API_KEY = os.environ.get('IMGBB_API_KEY', "")
 PORT = int(os.environ.get("PORT", 8080))
+WEB_URL = os.environ.get("WEB_URL", "https://your-domain.com")
 
 # Gemini AI সেটআপ
 model = None
@@ -111,9 +113,8 @@ DEFAULT_CONFIG = {
     ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,
     ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,
     EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL,
-    REMOVE_CUS_BTN,
-    ADMIN_REPORT_SELECT, ADMIN_REPORT_TIME
-) = range(31)
+    REMOVE_CUS_BTN
+) = range(30)
 
 # ==========================================
 # 3. হেল্পার ফাংশন
@@ -177,10 +178,12 @@ def get_user(user_id):
     return None
 
 def create_user(user_id, first_name, referrer_id=None):
-    if not get_user(user_id):
+    user_ref = db.collection('users').document(str(user_id))
+    user_doc = user_ref.get()
+    
+    if not user_doc.exists:
         try:
             # Generate a 6-digit password for web access
-            import random
             web_password = str(random.randint(100000, 999999))
             
             user_data = {
@@ -192,14 +195,24 @@ def create_user(user_id, first_name, referrer_id=None):
                 "referrer": referrer_id if referrer_id and referrer_id.isdigit() and str(referrer_id) != str(user_id) else None,
                 "is_blocked": False,
                 "is_admin": str(user_id) == str(OWNER_ID),
-                "web_password": web_password  # Store web password
+                "web_password": web_password
             }
-            db.collection('users').document(str(user_id)).set(user_data)
+            user_ref.set(user_data)
+            logger.info(f"New user created: {user_id} with password: {web_password}")
             return web_password
         except Exception as e:
             logger.error(f"Create user error: {e}")
             return None
-    return None
+    
+    # User already exists
+    existing_data = user_doc.to_dict()
+    if 'web_password' not in existing_data or not existing_data['web_password']:
+        web_password = str(random.randint(100000, 999999))
+        user_ref.update({"web_password": web_password})
+        logger.info(f"Password generated for existing user: {user_id} - {web_password}")
+        return web_password
+    
+    return existing_data.get('web_password')
 
 async def send_log_message(context, text, reply_markup=None):
     config = get_config()
@@ -229,6 +242,19 @@ def get_app_task_count(app_id):
         logger.error(f"Count Error: {e}")
         return 0
 
+def send_telegram_message(message, chat_id=None, reply_markup=None):
+    if not chat_id: return
+    try:
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        if reply_markup:
+            if hasattr(reply_markup, 'to_dict'):
+                 payload["reply_markup"] = reply_markup.to_dict()
+            else:
+                 payload["reply_markup"] = reply_markup
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"Telegram Send Error: {e}")
+
 # ==========================================
 # 4. ইউজার সাইড ফাংশন
 # ==========================================
@@ -238,18 +264,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     referrer = args[0] if args and args[0].isdigit() else None
     
+    # Create or get user with password
     web_password = create_user(user.id, user.first_name, referrer)
     
     if web_password:
-        await update.message.reply_text(
-            f"✅ আপনার ওয়েব এক্সেস পাসওয়ার্ড: `{web_password}`\n\n"
-            f"এই পাসওয়ার্ড দিয়ে ওয়েবসাইটে লগইন করতে পারবেন।",
-            parse_mode="Markdown"
+        # Send password message
+        password_msg = (
+            f"🔐 **আপনার ওয়েব পাসওয়ার্ড:** `{web_password}`\n\n"
+            f"🌐 **ওয়েব ড্যাশবোর্ড লিংক:** {WEB_URL}\n\n"
+            f"📱 টেলিগ্রাম আইডি: `{user.id}`\n"
+            f"🔑 পাসওয়ার্ড: `{web_password}`\n\n"
+            f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!"
         )
+        
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=password_msg,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Password send error: {e}")
 
     db_user = get_user(user.id)
     if db_user and db_user.get('is_blocked'):
-        await update.message.reply_text("⛔ আপনাকে ব্লক করা হয়েছে।")
+        if update.callback_query:
+            await update.callback_query.answer("⛔ আপনাকে ব্লক করা হয়েছে।", show_alert=True)
+        else:
+            await update.message.reply_text("⛔ আপনাকে ব্লক করা হয়েছে।")
         return
 
     config = get_config()
@@ -296,6 +338,69 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
 
+async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send web password to user"""
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    
+    if not user:
+        await update.message.reply_text("❌ আপনার একাউন্ট খুঁজে পাওয়া যায়নি। /start কমান্ড দিন।")
+        return
+    
+    # Generate new password if not exists
+    if 'web_password' not in user or not user['web_password']:
+        new_password = str(random.randint(100000, 999999))
+        db.collection('users').document(str(user_id)).update({'web_password': new_password})
+        user['web_password'] = new_password
+    
+    password_msg = (
+        f"🔐 **আপনার ওয়েব পাসওয়ার্ড:** `{user['web_password']}`\n\n"
+        f"🌐 **ওয়েব ড্যাশবোর্ড লিংক:** {WEB_URL}\n\n"
+        f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
+        f"🔑 পাসওয়ার্ড: `{user['web_password']}`\n\n"
+        f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!\n"
+        f"🔄 নতুন পাসওয়ার্ড চাইলে: /newpass"
+    )
+    
+    await update.message.reply_text(
+        password_msg,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
+            [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")]
+        ])
+    )
+
+async def new_password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate new web password"""
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    
+    if not user:
+        await update.message.reply_text("❌ আপনার একাউন্ট খুঁজে পাওয়া যায়নি। /start কমান্ড দিন।")
+        return
+    
+    # Generate new password
+    new_password = str(random.randint(100000, 999999))
+    db.collection('users').document(str(user_id)).update({'web_password': new_password})
+    
+    password_msg = (
+        f"✅ **নতুন পাসওয়ার্ড জেনারেট করা হয়েছে!**\n\n"
+        f"🔐 **নতুন পাসওয়ার্ড:** `{new_password}`\n\n"
+        f"🌐 **ওয়েব ড্যাশবোর্ড লিংক:** {WEB_URL}\n\n"
+        f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
+        f"🔑 পাসওয়ার্ড: `{new_password}`\n\n"
+        f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!"
+    )
+    
+    await update.message.reply_text(
+        password_msg,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)]
+        ])
+    )
+
 async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -307,15 +412,38 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "my_profile":
             user = get_user(query.from_user.id)
             if user:
-                msg = f"👤 **প্রোফাইল**\n\n🆔 ID: `{user['id']}`\n💰 ব্যালেন্স: ৳{user['balance']:.2f}\n✅ সম্পন্ন টাস্ক: {user['total_tasks']}"
+                msg = (
+                    f"👤 **প্রোফাইল**\n\n"
+                    f"🆔 ID: `{user['id']}`\n"
+                    f"💰 ব্যালেন্স: ৳{user['balance']:.2f}\n"
+                    f"✅ সম্পন্ন টাস্ক: {user['total_tasks']}\n"
+                    f"🔑 ওয়েব পাসওয়ার্ড: `{user.get('web_password', 'সেট করা নেই')}`\n\n"
+                    f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
+                )
             else:
                 msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
-            await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+            
+            await query.edit_message_text(
+                msg, 
+                parse_mode="Markdown", 
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔑 পাসওয়ার্ড দেখুন", callback_data="show_password")],
+                    [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
+                    [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
+                    [InlineKeyboardButton("🔙", callback_data="back_home")]
+                ])
+            )
 
         elif query.data == "refer_friend":
             config = get_config()
             link = f"https://t.me/{context.bot.username}?start={query.from_user.id}"
-            await query.edit_message_text(f"📢 **রেফার লিংক:**\n`{link}`\n\nপ্রতি রেফারে বোনাস: ৳{config['referral_bonus']}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+            await query.edit_message_text(
+                f"📢 **রেফার লিংক:**\n`{link}`\n\n"
+                f"প্রতি রেফারে বোনাস: ৳{config['referral_bonus']}\n\n"
+                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}",
+                parse_mode="Markdown", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+            )
 
         elif query.data == "show_schedule":
             config = get_config()
@@ -327,9 +455,49 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{config.get('schedule_text', '')}\n\n"
                 f"🕒 **কাজ জমা দেওয়ার সময়:**\n"
                 f"শুরু: `{s_time}`\n"
-                f"শেষ: `{e_time}`"
+                f"শেষ: `{e_time}`\n\n"
+                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
             )
-            await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+            await query.edit_message_text(
+                msg, 
+                parse_mode="Markdown", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+            )
+        
+        elif query.data == "show_password":
+            user = get_user(query.from_user.id)
+            if user and user.get('web_password'):
+                await query.edit_message_text(
+                    f"🔐 **আপনার পাসওয়ার্ড:** `{user['web_password']}`\n\n"
+                    f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
+                    f"📱 টেলিগ্রাম আইডি: `{query.from_user.id}`\n"
+                    f"🔑 পাসওয়ার্ড: `{user['web_password']}`",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
+                        [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
+                    ])
+                )
+        
+        elif query.data == "reset_password":
+            user_id = query.from_user.id
+            new_password = str(random.randint(100000, 999999))
+            db.collection('users').document(str(user_id)).update({'web_password': new_password})
+            
+            await query.edit_message_text(
+                f"✅ **নতুন পাসওয়ার্ড জেনারেট করা হয়েছে!**\n\n"
+                f"🔐 **নতুন পাসওয়ার্ড:** `{new_password}`\n\n"
+                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
+                f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
+                f"🔑 পাসওয়ার্ড: `{new_password}`\n\n"
+                f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
+                    [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
+                ])
+            )
+            
     except BadRequest as e:
         if "Message is not modified" in str(e): pass
         else: logger.error(f"Callback Error: {e}")
@@ -344,14 +512,19 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = get_config()
 
     if user['balance'] < config['min_withdraw']:
-        await query.edit_message_text(f"❌ উইথড্র বাতিল। সর্বনিম্ন উইথড্র অ্যামাউন্ট: ৳{config['min_withdraw']:.2f}", 
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+        await query.edit_message_text(
+            f"❌ উইথড্র বাতিল। সর্বনিম্ন উইথড্র অ্যামাউন্ট: ৳{config['min_withdraw']:.2f}", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+        )
         return ConversationHandler.END
 
-    await query.edit_message_text("পেমেন্ট মেথড সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("Bkash", callback_data="m_bkash"), InlineKeyboardButton("Nagad", callback_data="m_nagad")],
-        [InlineKeyboardButton("❌ বাতিল", callback_data="cancel")]
-    ]))
+    await query.edit_message_text(
+        "পেমেন্ট মেথড সিলেক্ট করুন:", 
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Bkash", callback_data="m_bkash"), InlineKeyboardButton("Nagad", callback_data="m_nagad")],
+            [InlineKeyboardButton("❌ বাতিল", callback_data="cancel")]
+        ])
+    )
     return WD_METHOD
 
 async def withdraw_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -377,11 +550,17 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(update.message.text)
 
         if amount < config['min_withdraw']:
-             await update.message.reply_text(f"❌ সর্বনিম্ন উইথড্র ৳{config['min_withdraw']:.2f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+             await update.message.reply_text(
+                 f"❌ সর্বনিম্ন উইথড্র ৳{config['min_withdraw']:.2f}", 
+                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+             )
              return ConversationHandler.END
 
         if amount > user['balance']:
-            await update.message.reply_text("❌ আপনার একাউন্টে পর্যাপ্ত ব্যালেন্স নেই।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+            await update.message.reply_text(
+                "❌ আপনার একাউন্টে পর্যাপ্ত ব্যালেন্স নেই।", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+            )
             return ConversationHandler.END
 
         db.collection('users').document(user_id).update({"balance": firestore.Increment(-amount)})
@@ -411,13 +590,22 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         await send_log_message(context, admin_msg, kb)
-        await update.message.reply_text("✅ উইথড্র রিকোয়েস্ট সফল হয়েছে! এডমিন চেক করে পেমেন্ট করবে।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+        await update.message.reply_text(
+            "✅ উইথড্র রিকোয়েস্ট সফল হয়েছে! এডমিন চেক করে পেমেন্ট করবে।", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+        )
 
     except ValueError:
-        await update.message.reply_text("❌ ভুল ইনপুট। শুধু সংখ্যা ব্যবহার করুন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+        await update.message.reply_text(
+            "❌ ভুল ইনপুট। শুধু সংখ্যা ব্যবহার করুন।", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+        )
     except Exception as e:
         logger.error(f"Withdraw Error: {e}")
-        await update.message.reply_text("❌ সমস্যা হয়েছে। পরে চেষ্টা করুন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+        await update.message.reply_text(
+            "❌ সমস্যা হয়েছে। পরে চেষ্টা করুন।", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+        )
 
     return ConversationHandler.END
 
@@ -447,13 +635,19 @@ async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT
 
     if action == "apr":
         db.collection('withdrawals').document(wd_id).update({"status": "approved", "processed_by": query.from_user.id})
-        await query.edit_message_text(f"✅ Approved Withdrawal for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", parse_mode="Markdown")
+        await query.edit_message_text(
+            f"✅ Approved Withdrawal for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", 
+            parse_mode="Markdown"
+        )
         await context.bot.send_message(chat_id=user_id, text=f"✅ আপনার ৳{amount:.2f} উইথড্র সফল হয়েছে!")
 
     elif action == "rej":
         db.collection('withdrawals').document(wd_id).update({"status": "rejected", "processed_by": query.from_user.id})
         db.collection('users').document(user_id).update({"balance": firestore.Increment(amount)})
-        await query.edit_message_text(f"❌ Rejected & Refunded for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", parse_mode="Markdown")
+        await query.edit_message_text(
+            f"❌ Rejected & Refunded for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", 
+            parse_mode="Markdown"
+        )
         await context.bot.send_message(chat_id=user_id, text=f"❌ আপনার ৳{amount:.2f} উইথড্র বাতিল হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।")
 
 # --- Task Submission System ---
@@ -482,7 +676,10 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
     apps = config.get('monitored_apps', [])
 
     if not apps:
-        await query.edit_message_text("❌ বর্তমানে কোনো কাজ নেই।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+        await query.edit_message_text(
+            "❌ বর্তমানে কোনো কাজ নেই।", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+        )
         return ConversationHandler.END
 
     buttons = []
@@ -499,7 +696,10 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
 
     buttons.append([InlineKeyboardButton("❌ বাতিল", callback_data="cancel")])
 
-    await query.edit_message_text("কোন অ্যাপে কাজ করতে চান সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(
+        "কোন অ্যাপে কাজ করতে চান সিলেক্ট করুন:", 
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
     return T_APP_SELECT
 
 async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -512,16 +712,21 @@ async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     app = next((a for a in config['monitored_apps'] if a['id'] == app_id), None)
 
     if not app:
-        await query.edit_message_text("❌ অ্যাপটি খুঁজে পাওয়া যায়নি।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
+        await query.edit_message_text(
+            "❌ অ্যাপটি খুঁজে পাওয়া যায়নি।", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+        )
         return ConversationHandler.END
 
     limit = app.get('limit', 1000)
     count = get_app_task_count(app_id)
 
     if count >= limit:
-         await query.edit_message_text(f"⛔ **দুঃখিত!**\n\n`{app['name']}` এর কাজের লিমিট শেষ হয়ে গেছে ({count}/{limit})।\nএডমিন লিমিট বাড়ালে আবার কাজ করতে পারবেন।", 
-                                       parse_mode="Markdown",
-                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+         await query.edit_message_text(
+             f"⛔ **দুঃখিত!**\n\n`{app['name']}` এর কাজের লিমিট শেষ হয়ে গেছে ({count}/{limit})।\nএডমিন লিমিট বাড়ালে আবার কাজ করতে পারবেন।", 
+             parse_mode="Markdown",
+             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+         )
          return ConversationHandler.END
 
     context.user_data['tid'] = app_id
@@ -625,17 +830,31 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await send_log_message(context, log_msg, kb)
-    await update.message.reply_text("✅ কাজ জমা হয়েছে! এডমিন চেক করে এপ্রুভ করবেন অথবা অটোমেটিক এপ্রুভ হবে।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+    await update.message.reply_text(
+        "✅ কাজ জমা হয়েছে! এডমিন চেক করে এপ্রুভ করবেন অথবা অটোমেটিক এপ্রুভ হবে।", 
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+    )
     return ConversationHandler.END
 
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.callback_query:
-            await update.callback_query.edit_message_text("❌ বাতিল করা হয়েছে।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+            await update.callback_query.edit_message_text(
+                "❌ বাতিল করা হয়েছে।", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+            )
         else:
-            await update.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+            await update.message.reply_text(
+                "❌ বাতিল করা হয়েছে।", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+            )
     except:
-         try: await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ বাতিল করা হয়েছে।")
+         try: 
+             await context.bot.send_message(
+                 chat_id=update.effective_chat.id, 
+                 text="❌ বাতিল করা হয়েছে।",
+                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+             )
          except: pass
     return ConversationHandler.END
 
@@ -667,12 +886,18 @@ async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if action == "apr":
         approve_task(task_id, user_id, price)
-        await query.edit_message_text(f"✅ Task Approved Manually\nUser: `{user_id}` (৳{price:.2f})\nBy: {query.from_user.first_name}", parse_mode="Markdown")
+        await query.edit_message_text(
+            f"✅ Task Approved Manually\nUser: `{user_id}` (৳{price:.2f})\nBy: {query.from_user.first_name}", 
+            parse_mode="Markdown"
+        )
         await context.bot.send_message(chat_id=user_id, text=f"🎉 আপনার কাজটি এপ্রুভ হয়েছে! ৳{price:.2f} যোগ হয়েছে।")
 
     elif action == "rej":
         task_ref.update({"status": "rejected", "processed_by": query.from_user.id})
-        await query.edit_message_text(f"❌ Task Rejected Manually\nUser: `{user_id}`\nBy: {query.from_user.first_name}", parse_mode="Markdown")
+        await query.edit_message_text(
+            f"❌ Task Rejected Manually\nUser: `{user_id}`\nBy: {query.from_user.first_name}", 
+            parse_mode="Markdown"
+        )
         await context.bot.send_message(chat_id=user_id, text="❌ আপনার কাজটি রিজেক্ট করা হয়েছে। সঠিক তথ্য দিয়ে আবার চেষ্টা করুন।")
 
 # ==========================================
@@ -765,26 +990,15 @@ def run_automation():
             logger.error(f"Loop Error: {e}")
         time.sleep(300)
 
-def send_telegram_message(message, chat_id=None, reply_markup=None):
-    if not chat_id: return
-    try:
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-        if reply_markup:
-            if hasattr(reply_markup, 'to_dict'):
-                 payload["reply_markup"] = reply_markup.to_dict()
-            else:
-                 payload["reply_markup"] = reply_markup
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json=payload, timeout=10)
-    except Exception as e:
-        logger.error(f"Telegram Send Error: {e}")
-
 # ==========================================
 # 6. এডমিন প্যানেল
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if not is_admin(query.from_user.id): return
+    if not is_admin(query.from_user.id): 
+        await query.answer("⚠️ Only Admins can access this!", show_alert=True)
+        return
 
     kb = [
         [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Bonus", callback_data="adm_finance")],
@@ -1442,23 +1656,31 @@ def main():
 
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # Add command handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("password", password_command))
+    application.add_handler(CommandHandler("newpass", new_password_command))
+    application.add_handler(CommandHandler("webpass", password_command))
 
+    # Admin panel
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-
     application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log)$"))
 
+    # Reports
     application.add_handler(CallbackQueryHandler(admin_reports_menu, pattern="^adm_reports$"))
     application.add_handler(CallbackQueryHandler(admin_reports_apps_selection, pattern="^rep_apps$"))
     application.add_handler(CallbackQueryHandler(admin_show_app_timeframes, pattern="^sel_rep_app_"))
     application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|repex_.*)$"))
 
+    # Button edit
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
     application.add_handler(CallbackQueryHandler(button_action_handler, pattern="^(btntog_|btnren_)"))
 
+    # Action handlers
     application.add_handler(CallbackQueryHandler(handle_withdrawal_action, pattern="^wd_(apr|rej)_"))
     application.add_handler(CallbackQueryHandler(handle_task_action, pattern="^t_(apr|rej)_"))
 
+    # Task submission conversation
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(start_task_submission, pattern="^submit_task$")],
         states={
@@ -1471,6 +1693,7 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
     ))
 
+    # Withdrawal conversation
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(withdraw_start, pattern="^start_withdraw$")],
         states={
@@ -1481,6 +1704,7 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
     ))
 
+    # App management conversations
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_app_start, pattern="^add_app$")],
         states={
@@ -1506,6 +1730,7 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
+    # User management
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(find_user_start, pattern="^find_user$")],
         states={
@@ -1516,6 +1741,7 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
+    # Text and button edit
     application.add_handler(ConversationHandler(
         entry_points=[
             CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_rules|ed_txt_schedule|ed_txt_referral_bonus)$"),
@@ -1528,6 +1754,7 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
+    # Custom buttons
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_custom_btn_start, pattern="^add_cus_btn$")],
         states={
@@ -1545,6 +1772,7 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
+    # Time settings
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(set_time_start_handler, pattern="^set_time_start$")],
         states={ADMIN_SET_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_start_save)]},
@@ -1557,6 +1785,7 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
+    # Admin management
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_admin_start, pattern="^add_new_admin$")],
         states={ADMIN_ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_save)]},
@@ -1569,13 +1798,15 @@ def main():
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
+    # Log channel
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(set_log_start, pattern="^set_log_id$")],
         states={ADMIN_SET_LOG_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_log_save)]},
         fallbacks=[CallbackQueryHandler(cancel_conv)]
     ))
 
-    application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule)$"))
+    # Common callbacks
+    application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule|show_password|reset_password)$"))
 
     print("🚀 Bot Started...")
     application.run_polling(drop_pending_updates=True)
