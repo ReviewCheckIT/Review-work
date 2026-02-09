@@ -114,7 +114,7 @@ DEFAULT_CONFIG = {
     ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,
     EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL,
     REMOVE_CUS_BTN
-) = range(30)
+) = range(29)
 
 # ==========================================
 # 3. হেল্পার ফাংশন
