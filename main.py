@@ -256,16 +256,6 @@ def send_telegram_message(message, chat_id=None, reply_markup=None):
 # ==========================================
 # 4. ইউজার সাইড ফাংশন
 # ==========================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    args = context.args
-    referrer = args[0] if args and args[0].isdigit() else None
-    
-    web_password = create_user(user.id, user.first_name, referrer)
-    
-    if web_password:
-        password_msg = 
         
         try:
             await context.bot.send_message(
