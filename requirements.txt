@@ -1,0 +1,7 @@
+python-telegram-bot
+firebase-admin
+google-play-scraper
+flask
+google-generativeai
+requests
+pytz
