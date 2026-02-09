@@ -99,21 +99,21 @@ DEFAULT_CONFIG = {
     "custom_buttons": [] 
 }
 
-# Conversation States
+# Conversation States - সঠিক সংখ্যা: 29
 (
-    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,
-    ADD_APP_ID, ADD_APP_NAME, ADD_APP_LIMIT,
-    WD_METHOD, WD_NUMBER, WD_AMOUNT,
-    REMOVE_APP_SELECT,
-    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,
-    ADMIN_EDIT_TEXT_KEY, ADMIN_EDIT_TEXT_VAL,
-    ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME,
-    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,
-    ADMIN_SET_LOG_CHANNEL,
-    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,
-    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,
-    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL,
-    REMOVE_CUS_BTN
+    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           # 0-4
+    ADD_APP_ID, ADD_APP_NAME, ADD_APP_LIMIT,                        # 5-7
+    WD_METHOD, WD_NUMBER, WD_AMOUNT,                                # 8-10
+    REMOVE_APP_SELECT,                                              # 11
+    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,        # 12-14
+    ADMIN_EDIT_TEXT_KEY, ADMIN_EDIT_TEXT_VAL,                       # 15-16
+    ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME,                        # 17-18
+    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,                         # 19-20
+    ADMIN_SET_LOG_CHANNEL,                                          # 21
+    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 22-23
+    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,                       # 24-25
+    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL,                            # 26-27
+    REMOVE_CUS_BTN                                                  # 28
 ) = range(29)
 
 # ==========================================
@@ -183,7 +183,6 @@ def create_user(user_id, first_name, referrer_id=None):
     
     if not user_doc.exists:
         try:
-            # Generate a 6-digit password for web access
             web_password = str(random.randint(100000, 999999))
             
             user_data = {
@@ -204,7 +203,6 @@ def create_user(user_id, first_name, referrer_id=None):
             logger.error(f"Create user error: {e}")
             return None
     
-    # User already exists
     existing_data = user_doc.to_dict()
     if 'web_password' not in existing_data or not existing_data['web_password']:
         web_password = str(random.randint(100000, 999999))
@@ -264,11 +262,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     referrer = args[0] if args and args[0].isdigit() else None
     
-    # Create or get user with password
     web_password = create_user(user.id, user.first_name, referrer)
     
     if web_password:
-        # Send password message
         password_msg = (
             f"🔐 **আপনার ওয়েব পাসওয়ার্ড:** `{web_password}`\n\n"
             f"🌐 **ওয়েব ড্যাশবোর্ড লিংক:** {WEB_URL}\n\n"
@@ -339,7 +335,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send web password to user"""
     user_id = update.effective_user.id
     user = get_user(user_id)
     
@@ -347,7 +342,6 @@ async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ আপনার একাউন্ট খুঁজে পাওয়া যায়নি। /start কমান্ড দিন।")
         return
     
-    # Generate new password if not exists
     if 'web_password' not in user or not user['web_password']:
         new_password = str(random.randint(100000, 999999))
         db.collection('users').document(str(user_id)).update({'web_password': new_password})
@@ -372,7 +366,6 @@ async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def new_password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate new web password"""
     user_id = update.effective_user.id
     user = get_user(user_id)
     
@@ -380,7 +373,6 @@ async def new_password_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ আপনার একাউন্ট খুঁজে পাওয়া যায়নি। /start কমান্ড দিন।")
         return
     
-    # Generate new password
     new_password = str(random.randint(100000, 999999))
     db.collection('users').document(str(user_id)).update({'web_password': new_password})
     
@@ -914,7 +906,6 @@ def approve_task(task_id, user_id, amount):
             "total_tasks": firestore.Increment(1)
         })
         
-        # Referral bonus
         user_ref = db.collection('users').document(str(user_id))
         user_data = user_ref.get().to_dict()
         if user_data.get('referrer'):
@@ -1009,148 +1000,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text("⚙️ **Super Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- REPORT HANDLING FUNCTIONS ---
-
-async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not is_admin(query.from_user.id): return
-
-    msg = (
-        "📊 **Reports & Export**\n\n"
-        "Download Approved Tasks data as **CSV/Spreadsheet**.\n"
-        "You can share this file with buyers as proof."
-    )
-
-    kb = [
-        [InlineKeyboardButton("📜 All Time History (ALL)", callback_data="rep_all")],
-        [InlineKeyboardButton("📅 Last 7 Days (ALL)", callback_data="rep_7d")],
-        [InlineKeyboardButton("🕒 Last 24 Hours (ALL)", callback_data="rep_24h")],
-        [InlineKeyboardButton("📱 By Specific App", callback_data="rep_apps")], 
-        [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
-    ]
-    await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-async def admin_reports_apps_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    config = get_config()
-    apps = config.get('monitored_apps', [])
-
-    if not apps:
-        await query.answer("No apps found!", show_alert=True)
-        return
-
-    kb = []
-    for app in apps:
-        kb.append([InlineKeyboardButton(f"📄 Report: {app['name']}", callback_data=f"sel_rep_app_{app['id']}")])
-
-    kb.append([InlineKeyboardButton("🔙 Back to Reports", callback_data="adm_reports")])
-    await query.edit_message_text("📊 Select App to download report:", reply_markup=InlineKeyboardMarkup(kb))
-
-async def admin_show_app_timeframes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    app_id = query.data.split("sel_rep_app_")[1]
-
-    kb = [
-        [InlineKeyboardButton("🕒 Last 24 Hours", callback_data=f"repex_24h_{app_id}")],
-        [InlineKeyboardButton("📅 Last 7 Days", callback_data=f"repex_7d_{app_id}")],
-        [InlineKeyboardButton("📜 All Time", callback_data=f"repex_all_{app_id}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="rep_apps")]
-    ]
-    await query.edit_message_text(f"📊 Select Timeframe for App ID: `{app_id}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Generating report... Please wait.")
-
-    data_code = query.data
-    now = datetime.now()
-    cutoff_date = None
-    target_app_id = None
-    file_prefix = "Report"
-
-    if data_code == "rep_7d":
-        cutoff_date = now - timedelta(days=7)
-        file_prefix = "All_Apps_7Days"
-    elif data_code == "rep_24h":
-        cutoff_date = now - timedelta(hours=24)
-        file_prefix = "All_Apps_24Hours"
-    elif data_code == "rep_all":
-        file_prefix = "All_Apps_AllTime"
-    elif data_code.startswith("repex_"):
-        parts = data_code.split("_")
-        time_mode = parts[1]
-        target_app_id = parts[2]
-
-        file_prefix = f"App_{target_app_id}_{time_mode}"
-
-        if time_mode == "24h":
-            cutoff_date = now - timedelta(hours=24)
-        elif time_mode == "7d":
-            cutoff_date = now - timedelta(days=7)
-
-    if target_app_id:
-        tasks_ref = db.collection('tasks').where('status', '==', 'approved').where('app_id', '==', target_app_id).stream()
-    else:
-        tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
-
-    data_rows = []
-
-    for t in tasks_ref:
-        t_data = t.to_dict()
-        approved_at = t_data.get('approved_at')
-
-        if approved_at:
-            if cutoff_date:
-                if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
-                    continue
-            date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            date_str = "N/A"
-            if cutoff_date: continue
-
-        data_rows.append([
-            t.id,
-            t_data.get('user_id', ''),
-            t_data.get('app_id', ''),
-            t_data.get('review_name', ''),
-            t_data.get('email', ''),
-            t_data.get('device', ''),
-            t_data.get('screenshot', ''),
-            t_data.get('price', 0),
-            date_str
-        ])
-
-    if not data_rows:
-        await query.message.reply_text("❌ No data found for this selection.")
-        return
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date"])
-    writer.writerows(data_rows)
-
-    output.seek(0)
-    byte_output = io.BytesIO(output.getvalue().encode('utf-8'))
-
-    filename = f"{file_prefix}_{now.strftime('%Y%m%d')}.csv"
-
-    caption_msg = (
-        f"📊 **Export Generated**\n"
-        f"📂 File: `{filename}`\n"
-        f"✅ Total Rows: {len(data_rows)}\n"
-        f"📅 Date: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    await context.bot.send_document(
-        chat_id=query.from_user.id,
-        document=byte_output,
-        filename=filename,
-        caption=caption_msg,
-        parse_mode="Markdown"
-    )
-
-# ----------------------------------------
-
 async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1237,6 +1086,95 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         kb = [[InlineKeyboardButton("✏️ Set Channel ID", callback_data="set_log_id")],
               [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif data == "adm_reports":
+        msg = (
+            "📊 **Reports & Export**\n\n"
+            "Download Approved Tasks data as **CSV/Spreadsheet**.\n"
+            "You can share this file with buyers as proof."
+        )
+        kb = [
+            [InlineKeyboardButton("📜 All Time History (ALL)", callback_data="rep_all")],
+            [InlineKeyboardButton("📅 Last 7 Days (ALL)", callback_data="rep_7d")],
+            [InlineKeyboardButton("🕒 Last 24 Hours (ALL)", callback_data="rep_24h")],
+            [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
+        ]
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Generating report... Please wait.")
+
+    data_code = query.data
+    now = datetime.now()
+    cutoff_date = None
+    file_prefix = "Report"
+
+    if data_code == "rep_7d":
+        cutoff_date = now - timedelta(days=7)
+        file_prefix = "All_Apps_7Days"
+    elif data_code == "rep_24h":
+        cutoff_date = now - timedelta(hours=24)
+        file_prefix = "All_Apps_24Hours"
+    elif data_code == "rep_all":
+        file_prefix = "All_Apps_AllTime"
+
+    tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
+    data_rows = []
+
+    for t in tasks_ref:
+        t_data = t.to_dict()
+        approved_at = t_data.get('approved_at')
+
+        if approved_at:
+            if cutoff_date:
+                if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
+                    continue
+            date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            date_str = "N/A"
+            if cutoff_date: continue
+
+        data_rows.append([
+            t.id,
+            t_data.get('user_id', ''),
+            t_data.get('app_id', ''),
+            t_data.get('review_name', ''),
+            t_data.get('email', ''),
+            t_data.get('device', ''),
+            t_data.get('screenshot', ''),
+            t_data.get('price', 0),
+            date_str
+        ])
+
+    if not data_rows:
+        await query.message.reply_text("❌ No data found for this selection.")
+        return
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date"])
+    writer.writerows(data_rows)
+
+    output.seek(0)
+    byte_output = io.BytesIO(output.getvalue().encode('utf-8'))
+
+    filename = f"{file_prefix}_{now.strftime('%Y%m%d')}.csv"
+
+    caption_msg = (
+        f"📊 **Export Generated**\n"
+        f"📂 File: `{filename}`\n"
+        f"✅ Total Rows: {len(data_rows)}\n"
+        f"📅 Date: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    await context.bot.send_document(
+        chat_id=query.from_user.id,
+        document=byte_output,
+        filename=filename,
+        caption=caption_msg,
+        parse_mode="Markdown"
+    )
 
 # --- Admin Management Functions ---
 
@@ -1664,13 +1602,8 @@ def main():
 
     # Admin panel
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log)$"))
-
-    # Reports
-    application.add_handler(CallbackQueryHandler(admin_reports_menu, pattern="^adm_reports$"))
-    application.add_handler(CallbackQueryHandler(admin_reports_apps_selection, pattern="^rep_apps$"))
-    application.add_handler(CallbackQueryHandler(admin_show_app_timeframes, pattern="^sel_rep_app_"))
-    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h|repex_.*)$"))
+    application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log|adm_reports)$"))
+    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h)$"))
 
     # Button edit
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
