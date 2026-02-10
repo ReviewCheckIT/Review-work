@@ -335,24 +335,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     row1 = []
-    if btns_conf['submit']['show']:
-        row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
-    if btns_conf['profile']['show']:
-        row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
+    if btns_conf.get('submit', {}).get('show', True):
+        callback_data = btns_conf['submit'].get('callback_data', 'submit_task')
+        row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data=callback_data))
+    if btns_conf.get('profile', {}).get('show', True):
+        callback_data = btns_conf['profile'].get('callback_data', 'my_profile')
+        row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data=callback_data))
     if row1:
         keyboard.append(row1)
 
     row2 = []
-    if btns_conf['withdraw']['show']:
-        row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
-    if btns_conf['refer']['show']:
-        row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
+    if btns_conf.get('withdraw', {}).get('show', True):
+        callback_data = btns_conf['withdraw'].get('callback_data', 'start_withdraw')
+        row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data=callback_data))
+    if btns_conf.get('refer', {}).get('show', True):
+        callback_data = btns_conf['refer'].get('callback_data', 'refer_friend')
+        row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data=callback_data))
     if row2:
         keyboard.append(row2)
 
     row3 = []
     if btns_conf.get('schedule', {}).get('show', True):
-        row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
+        callback_data = btns_conf['schedule'].get('callback_data', 'show_schedule')
+        row3.append(InlineKeyboardButton(btns_conf['schedule']['text'], callback_data=callback_data))
     row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
     if row3:
         keyboard.append(row3)
