@@ -8,35 +8,28 @@ import csv
 import io
 import random
 from datetime import datetime, timedelta
+import pytz
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler,
-    MessageHandler, filters, ConversationHandler
+    MessageHandler, filters, ConversationHandler, Application
 )
 from google_play_scraper import Sort, reviews as play_reviews
 from flask import Flask, request, jsonify
 import schedule
 
-# --- AI Import Safeguard ---
-try:
-    import google.generativeai as genai
-    AI_AVAILABLE = True
-except Exception as e:
-    print(f"⚠️ Google AI Library Error (Skipping AI features): {e}")
-    AI_AVAILABLE = False
-    genai = None
-
 # ==========================================
 # 1. কনফিগারেশন এবং সেটআপ
 # ==========================================
 
+# লগিং সেটআপ
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -45,22 +38,28 @@ logger = logging.getLogger(__name__)
 
 # ENV ভেরিয়েবল
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-OWNER_ID = os.environ.get("OWNER_ID", "") 
+OWNER_ID = os.environ.get("OWNER_ID", "")
 FIREBASE_JSON = os.environ.get("FIREBASE_CREDENTIALS", "firebase_key.json")
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
 IMGBB_API_KEY = os.environ.get('IMGBB_API_KEY', "")
 PORT = int(os.environ.get("PORT", 8080))
 WEB_URL = os.environ.get("WEB_URL", "")
 WEB_API_TOKEN = os.environ.get("WEB_API_TOKEN", "secret_token_12345")
+TIMEZONE = pytz.timezone('Asia/Dhaka')
 
-# Gemini AI সেটআপ
-model = None
-if AI_AVAILABLE and GEMINI_API_KEY:
-    try:
+# AI Import Safeguard
+try:
+    import google.generativeai as genai
+    if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-1.5-flash')
-    except Exception as e:
-        logger.error(f"Gemini AI Config Error: {e}")
+        AI_AVAILABLE = True
+    else:
+        AI_AVAILABLE = False
+except Exception as e:
+    logger.warning(f"AI Library skipped: {e}")
+    AI_AVAILABLE = False
+    model = None
 
 # Firebase কানেকশন
 if not firebase_admin._apps:
@@ -73,7 +72,11 @@ if not firebase_admin._apps:
         firebase_admin.initialize_app(cred)
         print("✅ Firebase Connected Successfully!")
     except Exception as e:
-        print(f"❌ Firebase Connection Failed: {e}")
+        logger.error(f"❌ Firebase Connection Failed: {e}")
+        # Local fallback for testing only
+        if os.path.exists("firebase_key.json"):
+            cred = credentials.Certificate("firebase_key.json")
+            firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
@@ -81,16 +84,21 @@ db = firestore.client()
 # 2. গ্লোবাল কনফিগারেশন ও স্টেট
 # ==========================================
 
+# ক্যাশিং সিস্টেম (Performance Optimization)
+CONFIG_CACHE = {}
+LAST_CONFIG_FETCH = 0
+CACHE_TTL = 60  # 60 সেকেন্ড ক্যাশ থাকবে
+
 DEFAULT_CONFIG = {
-    "task_price": 20.0,
-    "referral_bonus": 5.0,
+    "task_price": 5.0,
+    "referral_bonus": 2.0,
     "min_withdraw": 50.0,
     "monitored_apps": [],
     "log_channel_id": "",
     "work_start_time": "15:30",
     "work_end_time": "23:00",
-    "rules_text": "⚠️ কাজের নিয়ম: ভিডিওতে দেখানো হয়েছে ভিডিওটি দেখে নিন।",
-    "schedule_text": "⏰ কাজের সময়: বিকেল 03:30 PM To 11:00 PM।",
+    "rules_text": "⚠️ কাজের নিয়ম: অ্যাপ ইন্সটল করুন, ৫ স্টার রেটিং দিন এবং সুন্দর রিভিউ লিখুন।",
+    "schedule_text": "⏰ কাজের সময়: প্রতিদিন বিকেল ৩:৩০ থেকে রাত ১১:০০ পর্যন্ত।",
     "buttons": {
         "submit": {"text": "💰 কাজ জমা দিন", "show": True},
         "profile": {"text": "👤 প্রোফাইল", "show": True},
@@ -103,51 +111,63 @@ DEFAULT_CONFIG = {
     "check_interval_hours": 24
 }
 
-# Conversation States - সঠিক সংখ্যা: 29
+# Conversation States
 (
-    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           # 0-4
-    ADD_APP_ID, ADD_APP_NAME, ADD_APP_LIMIT,                        # 5-7
-    WD_METHOD, WD_NUMBER, WD_AMOUNT,                                # 8-10
-    REMOVE_APP_SELECT,                                              # 11
-    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,        # 12-14
-    ADMIN_EDIT_TEXT_KEY, ADMIN_EDIT_TEXT_VAL,                       # 15-16
-    ADMIN_EDIT_BTN_KEY, ADMIN_EDIT_BTN_NAME,                        # 17-18
-    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,                         # 19-20
-    ADMIN_SET_LOG_CHANNEL,                                          # 21
-    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         # 22-23
-    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,                       # 24-25
-    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL,                            # 26-27
-    REMOVE_CUS_BTN                                                  # 28
-) = range(29)
+    T_APP_SELECT, T_REVIEW_NAME, T_EMAIL, T_DEVICE, T_SS,           
+    ADD_APP_ID, ADD_APP_NAME, ADD_APP_LIMIT,                        
+    WD_METHOD, WD_NUMBER, WD_AMOUNT,                                
+    REMOVE_APP_SELECT,                                              
+    ADMIN_USER_SEARCH, ADMIN_USER_ACTION, ADMIN_USER_AMOUNT,        
+    ADMIN_EDIT_TEXT_VAL, ADMIN_EDIT_BTN_NAME,
+    ADMIN_ADD_BTN_NAME, ADMIN_ADD_BTN_LINK,                         
+    ADMIN_SET_LOG_CHANNEL,                                          
+    ADMIN_ADD_ADMIN_ID, ADMIN_RMV_ADMIN_ID,                         
+    ADMIN_SET_START_TIME, ADMIN_SET_END_TIME,                       
+    EDIT_APP_SELECT, EDIT_APP_LIMIT_VAL,                            
+    REMOVE_CUS_BTN                                                  
+) = range(27)
 
 # ==========================================
 # 3. হেল্পার ফাংশন
 # ==========================================
 
 def get_config():
+    global CONFIG_CACHE, LAST_CONFIG_FETCH
+    current_time = time.time()
+    
+    if CONFIG_CACHE and (current_time - LAST_CONFIG_FETCH < CACHE_TTL):
+        return CONFIG_CACHE
+
     try:
         ref = db.collection('settings').document('main_config')
         doc = ref.get()
         if doc.exists:
             data = doc.to_dict()
-            for key, val in DEFAULT_CONFIG.items():
-                if key not in data:
-                    data[key] = val
-            return data
+            # Merge with default to ensure all keys exist
+            merged_config = DEFAULT_CONFIG.copy()
+            merged_config.update(data)
+            CONFIG_CACHE = merged_config
         else:
             ref.set(DEFAULT_CONFIG)
-            return DEFAULT_CONFIG
-    except:
+            CONFIG_CACHE = DEFAULT_CONFIG
+        
+        LAST_CONFIG_FETCH = current_time
+        return CONFIG_CACHE
+    except Exception as e:
+        logger.error(f"Config Fetch Error: {e}")
         return DEFAULT_CONFIG
 
 def update_config(data):
+    global CONFIG_CACHE
     try:
         db.collection('settings').document('main_config').set(data, merge=True)
+        # Invalidate cache
+        CONFIG_CACHE = {}
     except Exception as e:
         logger.error(f"Config Update Error: {e}")
 
 def get_bd_time():
-    return datetime.utcnow() + timedelta(hours=6)
+    return datetime.now(TIMEZONE)
 
 def is_working_hour():
     config = get_config()
@@ -162,6 +182,7 @@ def is_working_hour():
         if start < end:
             return start <= now <= end
         else:
+            # Crosses midnight
             return now >= start or now <= end
     except Exception as e:
         logger.error(f"Time Check Error: {e}")
@@ -180,18 +201,6 @@ def get_user(user_id):
         if doc.exists: return doc.to_dict()
     except: pass
     return None
-
-def get_referral_count(user_id):
-    """Count how many users referred by this user"""
-    try:
-        referrals_ref = db.collection('users').where('referrer', '==', str(user_id)).stream()
-        count = 0
-        for doc in referrals_ref:
-            count += 1
-        return count
-    except Exception as e:
-        logger.error(f"Referral count error: {e}")
-        return 0
 
 def create_user(user_id, first_name, referrer_id=None):
     user_ref = db.collection('users').document(str(user_id))
@@ -214,31 +223,22 @@ def create_user(user_id, first_name, referrer_id=None):
                 "referral_count": 0
             }
             user_ref.set(user_data)
-            logger.info(f"New user created: {user_id} with password: {web_password}")
             
-            # Update referrer's referral count if exists
-            if referrer_id and referrer_id.isdigit():
+            if referrer_id and referrer_id.isdigit() and str(referrer_id) != str(user_id):
                 try:
-                    referrer_ref = db.collection('users').document(str(referrer_id))
-                    referrer_ref.update({
+                    # Transactional increment is safer but direct update is faster for this scale
+                    db.collection('users').document(str(referrer_id)).update({
                         "referral_count": firestore.Increment(1)
                     })
                 except Exception as e:
-                    logger.error(f"Failed to update referrer count: {e}")
+                    logger.error(f"Referrer update failed: {e}")
             
             return web_password
         except Exception as e:
             logger.error(f"Create user error: {e}")
             return None
     
-    existing_data = user_doc.to_dict()
-    if 'web_password' not in existing_data or not existing_data['web_password']:
-        web_password = str(random.randint(100000, 999999))
-        user_ref.update({"web_password": web_password})
-        logger.info(f"Password generated for existing user: {user_id} - {web_password}")
-        return web_password
-    
-    return existing_data.get('web_password')
+    return user_doc.to_dict().get('web_password')
 
 async def send_log_message(context, text, reply_markup=None):
     config = get_config()
@@ -250,39 +250,18 @@ async def send_log_message(context, text, reply_markup=None):
         except Exception as e:
             logger.error(f"Log Send Error: {e}")
 
-def get_ai_summary(text, rating):
-    if not model: return "N/A"
-    try:
-        prompt = f"Review: '{text}' ({rating}/5). Summarize sentiment in Bangla (max 10 words). Start with 'মুড:'"
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except: return "N/A"
-
 def get_app_task_count(app_id):
     try:
-        pending = db.collection('tasks').where('app_id', '==', app_id).where('status', '==', 'pending').stream()
-        approved = db.collection('tasks').where('app_id', '==', app_id).where('status', '==', 'approved').stream()
-        count = len(list(pending)) + len(list(approved))
-        return count
+        # Optimization: Create a composite index in Firebase for (app_id, status)
+        pending = db.collection('tasks').where('app_id', '==', app_id).where('status', '==', 'pending').count().get()
+        approved = db.collection('tasks').where('app_id', '==', app_id).where('status', '==', 'approved').count().get()
+        return pending[0][0].value + approved[0][0].value
     except Exception as e:
         logger.error(f"Count Error: {e}")
         return 0
 
-def send_telegram_message(message, chat_id=None, reply_markup=None):
-    if not chat_id: return
-    try:
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-        if reply_markup:
-            if hasattr(reply_markup, 'to_dict'):
-                 payload["reply_markup"] = reply_markup.to_dict()
-            else:
-                 payload["reply_markup"] = reply_markup
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json=payload, timeout=10)
-    except Exception as e:
-        logger.error(f"Telegram Send Error: {e}")
-
 # ==========================================
-# 4. ইউজার সাইড ফাংশন - প্রোফাইল ফিক্স করা হয়েছে
+# 4. বট কমান্ড হ্যান্ডলার (User Side)
 # ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -290,479 +269,186 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     referrer = args[0] if args and args[0].isdigit() else None
     
-    web_password = create_user(user.id, user.first_name, referrer)
+    # Run DB operation in thread to avoid blocking
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, create_user, user.id, user.first_name, referrer)
     
-    db_user = get_user(user.id)
+    # Check block status
+    db_user = await loop.run_in_executor(None, get_user, user.id)
     if db_user and db_user.get('is_blocked'):
-        if update.callback_query:
-            await update.callback_query.answer("⛔ আপনাকে ব্লক করা হয়েছে।", show_alert=True)
-        else:
-            await update.message.reply_text("⛔ আপনাকে ব্লক করা হয়েছে।")
+        await update.message.reply_text("⛔ আপনাকে ব্লক করা হয়েছে।")
         return
 
     config = get_config()
     btns_conf = config.get('buttons', DEFAULT_CONFIG['buttons'])
 
     welcome_msg = (
-        f"আসসালামু আলাইকুম ওয়ারাহমাতুল্লাহি ওয়াবারাকাতুহ, {user.first_name}! 🌙\n\n"
+        f"আসসালামু আলাইকুম, {user.first_name}! 🌙\n\n"
         f"🗒 **কাজের নিয়মাবলী:**\n{config.get('rules_text', '')}\n\n"
         "নিচের মেনু থেকে অপশন সিলেক্ট করুন:"
     )
 
     keyboard = []
+    row1, row2, row3 = [], [], []
     
-    # Row 1: Submit Task and Profile
-    row1 = []
-    if btns_conf['submit']['show']: 
-        row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
-    if btns_conf['profile']['show']: 
-        row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
-    if row1: 
-        keyboard.append(row1)
-
-    # Row 2: Withdraw and Refer
-    row2 = []
-    if btns_conf['withdraw']['show']: 
-        row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
-    if btns_conf['refer']['show']: 
-        row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
-    if row2: 
-        keyboard.append(row2)
-
-    # Row 3: Schedule and Refresh
-    row3 = []
-    if btns_conf.get('schedule', {}).get('show', True): 
-        row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
+    if btns_conf['submit']['show']: row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
+    if btns_conf['profile']['show']: row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
+    if btns_conf['withdraw']['show']: row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
+    if btns_conf['refer']['show']: row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
+    if btns_conf.get('schedule', {}).get('show', True): row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
     row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
-    if row3: 
-        keyboard.append(row3)
 
-    # Custom buttons (must have URL)
-    custom_btns = config.get('custom_buttons', [])
-    for btn in custom_btns:
-        if btn.get('text') and btn.get('url') and btn.get('url').startswith(('http://', 'https://')):
+    if row1: keyboard.append(row1)
+    if row2: keyboard.append(row2)
+    if row3: keyboard.append(row3)
+
+    for btn in config.get('custom_buttons', []):
+        if btn.get('text') and btn.get('url'):
             keyboard.append([InlineKeyboardButton(btn['text'], url=btn['url'])])
 
-    # Admin panel button
     if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("⚙️ এডমিন প্যানেল", callback_data="admin_panel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
-        except BadRequest as e:
-            if "Message is not modified" not in str(e):
-                logger.error(f"Start Error: {e}")
-                # Try sending a new message instead
-                await update.callback_query.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.callback_query.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
     else:
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
-
-async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        await update.message.reply_text("❌ আপনার একাউন্ট খুঁজে পাওয়া যায়নি। /start কমান্ড দিন।")
-        return
-    
-    if 'web_password' not in user or not user['web_password']:
-        new_password = str(random.randint(100000, 999999))
-        db.collection('users').document(str(user_id)).update({'web_password': new_password})
-        user['web_password'] = new_password
-    
-    password_msg = (
-        f"🔐 **আপনার ওয়েব পাসওয়ার্ড:** `{user['web_password']}`\n\n"
-        f"🌐 **ওয়েব ড্যাশবোর্ড লিংক:** {WEB_URL}\n\n"
-        f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
-        f"🔑 পাসওয়ার্ড: `{user['web_password']}`\n\n"
-        f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!\n"
-        f"🔄 নতুন পাসওয়ার্ড চাইলে: /newpass"
-    )
-    
-    # Create keyboard with proper buttons
-    keyboard = []
-    if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
-        keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
-    keyboard.append([InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")])
-    
-    await update.message.reply_text(
-        password_msg,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def new_password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        await update.message.reply_text("❌ আপনার একাউন্ট খুঁজে পাওয়া যায়নি। /start কমান্ড দিন।")
-        return
-    
-    new_password = str(random.randint(100000, 999999))
-    db.collection('users').document(str(user_id)).update({'web_password': new_password})
-    
-    password_msg = (
-        f"✅ **নতুন পাসওয়ার্ড জেনারেট করা হয়েছে!**\n\n"
-        f"🔐 **নতুন পাসওয়ার্ড:** `{new_password}`\n\n"
-        f"🌐 **ওয়েব ড্যাশবোর্ড লিংক:** {WEB_URL}\n\n"
-        f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
-        f"🔑 পাসওয়ার্ড: `{new_password}`\n\n"
-        f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!"
-    )
-    
-    # Create keyboard with proper buttons
-    keyboard = []
-    if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
-        keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
-    
-    await update.message.reply_text(
-        password_msg,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
 
 async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    data = query.data
 
-    try:
-        if query.data == "back_home":
-            await start(update, context)
-            return
+    if data == "back_home":
+        # Edit message instead of sending new one to keep chat clean
+        await start_menu_edit(update, context)
+        return
 
-        elif query.data == "my_profile":
-            user = get_user(query.from_user.id)
-            if user:
-                referral_count = get_referral_count(query.from_user.id)
-                msg = (
-                    f"👤 **প্রোফাইল**\n\n"
-                    f"🆔 ID: `{user['id']}`\n"
-                    f"👤 নাম: {user.get('name', 'N/A')}\n"
-                    f"💰 ব্যালেন্স: ৳{user['balance']:.2f}\n"
-                    f"✅ সম্পন্ন টাস্ক: {user['total_tasks']}\n"
-                    f"👥 রেফার করেছে: {referral_count} জন\n"
-                    f"🔑 ওয়েব পাসওয়ার্ড: `{user.get('web_password', 'সেট করা নেই')}`\n\n"
-                    f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
-                )
-            else:
-                msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
-            
-            # Create keyboard with proper buttons
-            keyboard = [
-                [InlineKeyboardButton("🔑 পাসওয়ার্ড দেখুন", callback_data="show_password")],
-                [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
-                [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
-            ]
-            
-            if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
-                keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
-            
-            keyboard.append([InlineKeyboardButton("🔙 হোম", callback_data="back_home")])
-            
-            await query.edit_message_text(
-                msg, 
-                parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+    user_id = query.from_user.id
+    loop = asyncio.get_running_loop()
+    user = await loop.run_in_executor(None, get_user, user_id)
 
-        elif query.data == "refer_friend":
-            config = get_config()
-            user = get_user(query.from_user.id)
-            referral_count = get_referral_count(query.from_user.id)
-            
-            link = f"https://t.me/{context.bot.username}?start={query.from_user.id}"
-            await query.edit_message_text(
-                f"📢 **রেফার সিস্টেম**\n\n"
-                f"🔗 **আপনার রেফার লিংক:**\n`{link}`\n\n"
-                f"👥 **আপনি মোট রেফার করেছেন:** {referral_count} জন\n"
-                f"💰 **প্রতি রেফারে বোনাস:** ৳{config['referral_bonus']:.2f}\n"
-                f"💵 **আপনার রেফার বোনাস:** ৳{referral_count * config['referral_bonus']:.2f}\n\n"
-                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}",
-                parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔗 লিংক শেয়ার করুন", url=f"https://t.me/share/url?url={link}&text=Join%20this%20earning%20bot")],
-                    [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")],
-                    [InlineKeyboardButton("🏠 হোম", callback_data="back_home")]
-                ])
-            )
+    if not user:
+        await query.message.reply_text("❌ User not found, please type /start")
+        return
 
-        elif query.data == "show_schedule":
-            config = get_config()
-            s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
-            e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
-            auto_time = config.get('auto_approve_time', '20:30')
-
-            msg = (
-                f"📅 **সময়সূচী:**\n\n"
-                f"{config.get('schedule_text', '')}\n\n"
-                f"🕒 **কাজ জমা দেওয়ার সময়:**\n"
-                f"শুরু: `{s_time}`\n"
-                f"শেষ: `{e_time}`\n\n"
-                f"✅ **স্বয়ংক্রিয় এপ্রুভ সময়:** `{auto_time}`\n"
-                f"⏳ **চেকিং সময়:** প্রতি ২৪ ঘন্টা\n\n"
-                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
-            )
-            await query.edit_message_text(
-                msg, 
-                parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-            )
-        
-        elif query.data == "show_password":
-            user = get_user(query.from_user.id)
-            if user and user.get('web_password'):
-                await query.edit_message_text(
-                    f"🔐 **আপনার পাসওয়ার্ড:** `{user['web_password']}`\n\n"
-                    f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
-                    f"📱 টেলিগ্রাম আইডি: `{query.from_user.id}`\n"
-                    f"🔑 পাসওয়ার্ড: `{user['web_password']}`",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
-                        [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
-                    ])
-                )
-        
-        elif query.data == "reset_password":
-            user_id = query.from_user.id
-            new_password = str(random.randint(100000, 999999))
-            db.collection('users').document(str(user_id)).update({'web_password': new_password})
-            
-            # Create keyboard with proper buttons
-            keyboard = []
-            if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
-                keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
-            keyboard.append([InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")])
-            
-            await query.edit_message_text(
-                f"✅ **নতুন পাসওয়ার্ড জেনারেট করা হয়েছে!**\n\n"
-                f"🔐 **নতুন পাসওয়ার্ড:** `{new_password}`\n\n"
-                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
-                f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
-                f"🔑 পাসওয়ার্ড: `{new_password}`\n\n"
-                f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            
-    except BadRequest as e:
-        if "Message is not modified" in str(e): 
-            pass
-        else: 
-            logger.error(f"Callback Error: {e}")
-            # Try to send a new message if edit fails
-            try:
-                await query.message.reply_text("❌ সমস্যা হয়েছে। আবার চেষ্টা করুন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
-            except:
-                pass
-
-# --- Withdrawal System ---
-
-async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user = get_user(query.from_user.id)
-    config = get_config()
-
-    if user['balance'] < config['min_withdraw']:
-        await query.edit_message_text(
-            f"❌ উইথড্র বাতিল। সর্বনিম্ন উইথড্র অ্যামাউন্ট: ৳{config['min_withdraw']:.2f}", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+    if data == "my_profile":
+        msg = (
+            f"👤 **প্রোফাইল**\n\n"
+            f"🆔 ID: `{user['id']}`\n"
+            f"👤 নাম: {user.get('name', 'N/A')}\n"
+            f"💰 ব্যালেন্স: ৳{user['balance']:.2f}\n"
+            f"✅ সম্পন্ন টাস্ক: {user['total_tasks']}\n"
+            f"👥 রেফার করেছেন: {user.get('referral_count', 0)} জন\n"
+            f"🔑 ওয়েব পাসওয়ার্ড: `{user.get('web_password', 'N/A')}`\n"
+            f"🌐 ওয়েব লগইন: {WEB_URL}"
         )
-        return ConversationHandler.END
+        kb = [
+            [InlineKeyboardButton("🔄 পাসওয়ার্ড পরিবর্তন", callback_data="reset_password")],
+            [InlineKeyboardButton("🔙 হোম", callback_data="back_home")]
+        ]
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-    await query.edit_message_text(
-        "পেমেন্ট মেথড সিলেক্ট করুন:", 
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Bkash", callback_data="m_bkash"), InlineKeyboardButton("Nagad", callback_data="m_nagad")],
-            [InlineKeyboardButton("❌ বাতিল", callback_data="cancel")]
-        ])
+    elif data == "refer_friend":
+        config = get_config()
+        link = f"https://t.me/{context.bot.username}?start={user_id}"
+        msg = (
+            f"📢 **রেফার ও আর্ন**\n\n"
+            f"🔗 **আপনার লিংক:**\n`{link}`\n\n"
+            f"👥 মোট রেফার: {user.get('referral_count', 0)} জন\n"
+            f"💰 প্রতি রেফার বোনাস: ৳{config['referral_bonus']:.2f}\n"
+            "আপনার বন্ধু এই লিংকে জয়েন করে কাজ করলে আপনি বোনাস পাবেন।"
+        )
+        kb = [
+            [InlineKeyboardButton("🔗 শেয়ার করুন", url=f"https://t.me/share/url?url={link}")],
+            [InlineKeyboardButton("🔙 হোম", callback_data="back_home")]
+        ]
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif data == "show_schedule":
+        config = get_config()
+        msg = (
+            f"📅 **সময়সূচী**\n\n{config.get('schedule_text', '')}\n\n"
+            f"🟢 শুরু: {config.get('work_start_time')}\n"
+            f"🔴 শেষ: {config.get('work_end_time')}\n"
+            f"🕒 অটো এপ্রুভ: {config.get('auto_approve_time')}"
+        )
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+
+    elif data == "reset_password":
+        new_pass = str(random.randint(100000, 999999))
+        db.collection('users').document(str(user_id)).update({'web_password': new_pass})
+        await query.edit_message_text(f"✅ নতুন পাসওয়ার্ড: `{new_pass}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]]))
+
+async def start_menu_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Re-generates the start menu but edits existing message
+    user = update.effective_user
+    config = get_config()
+    btns_conf = config.get('buttons', DEFAULT_CONFIG['buttons'])
+    
+    welcome_msg = (
+        f"আসসালামু আলাইকুম, {user.first_name}! 🌙\n\n"
+        f"🗒 **কাজের নিয়মাবলী:**\n{config.get('rules_text', '')}\n\n"
+        "নিচের মেনু থেকে অপশন সিলেক্ট করুন:"
     )
-    return WD_METHOD
-
-async def withdraw_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "cancel": 
-        await cancel_conv(update, context)
-        return ConversationHandler.END
-
-    context.user_data['wd_method'] = "Bkash" if "bkash" in query.data else "Nagad"
-    await query.edit_message_text(f"আপনার {context.user_data['wd_method']} নাম্বারটি দিন:")
-    return WD_NUMBER
-
-async def withdraw_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['wd_number'] = update.message.text
-    await update.message.reply_text("কত টাকা উইথড্র করতে চান? (সংখ্যা লিখুন)")
-    return WD_AMOUNT
-
-async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    user = get_user(user_id)
-    config = get_config()
-
+    keyboard = []
+    row1, row2, row3 = [], [], []
+    if btns_conf['submit']['show']: row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
+    if btns_conf['profile']['show']: row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
+    if btns_conf['withdraw']['show']: row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
+    if btns_conf['refer']['show']: row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
+    row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
+    
+    if row1: keyboard.append(row1)
+    if row2: keyboard.append(row2)
+    keyboard.append(row3)
+    
+    if is_admin(user.id):
+        keyboard.append([InlineKeyboardButton("⚙️ এডমিন প্যানেল", callback_data="admin_panel")])
+        
     try:
-        amount = float(update.message.text)
+        await update.callback_query.edit_message_text(welcome_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    except:
+        await update.callback_query.message.reply_text(welcome_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        if amount < config['min_withdraw']:
-             await update.message.reply_text(
-                 f"❌ সর্বনিম্ন উইথড্র ৳{config['min_withdraw']:.2f}", 
-                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-             )
-             return ConversationHandler.END
+# ==========================================
+# 5. টাস্ক সাবমিশন সিস্টেম (Robust)
+# ==========================================
 
-        if amount > user['balance']:
-            await update.message.reply_text(
-                "❌ আপনার একাউন্টে পর্যাপ্ত ব্যালেন্স নেই।", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-            )
-            return ConversationHandler.END
-
-        db.collection('users').document(user_id).update({"balance": firestore.Increment(-amount)})
-
-        wd_ref = db.collection('withdrawals').add({
-            "user_id": user_id,
-            "user_name": update.effective_user.first_name,
-            "amount": amount,
-            "method": context.user_data['wd_method'],
-            "number": context.user_data['wd_number'],
-            "status": "pending",
-            "time": datetime.now()
-        })
-
-        wd_id = wd_ref[1].id
-
-        admin_msg = (
-            f"💸 **New Withdrawal Request**\n"
-            f"👤 User: `{user_id}` ({update.effective_user.first_name})\n"
-            f"💰 Amount: ৳{amount:.2f}\n"
-            f"📱 Method: {context.user_data['wd_method']} ({context.user_data['wd_number']})\n"
-            f"🔢 Balance Left: ৳{user['balance'] - amount:.2f}"
-        )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Approve", callback_data=f"wd_apr_{wd_id}_{user_id}"), 
-             InlineKeyboardButton("❌ Reject", callback_data=f"wd_rej_{wd_id}_{user_id}")]
-        ])
-
-        await send_log_message(context, admin_msg, kb)
-        await update.message.reply_text(
-            "✅ উইথড্র রিকোয়েস্ট সফল হয়েছে! এডমিন চেক করে পেমেন্ট করবে।", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-        )
-
-    except ValueError:
-        await update.message.reply_text(
-            "❌ ভুল ইনপুট। শুধু সংখ্যা ব্যবহার করুন।", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-        )
-    except Exception as e:
-        logger.error(f"Withdraw Error: {e}")
-        await update.message.reply_text(
-            "❌ সমস্যা হয়েছে। পরে চেষ্টা করুন।", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-        )
-
-    return ConversationHandler.END
-
-async def handle_withdrawal_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not is_admin(query.from_user.id):
-        await query.answer("⚠️ Only Admins can do this!", show_alert=True)
-        return
-
-    data = query.data.split('_')
-    action = data[1]
-    wd_id = data[2]
-    user_id = data[3]
-
-    wd_doc = db.collection('withdrawals').document(wd_id).get()
-    if not wd_doc.exists:
-        await query.answer("Withdrawal request not found.", show_alert=True)
-        return
-
-    wd_data = wd_doc.to_dict()
-    if wd_data['status'] != 'pending':
-        await query.answer(f"Already processed ({wd_data['status']})", show_alert=True)
-        await query.edit_message_reply_markup(None)
-        return
-
-    amount = wd_data['amount']
-
-    if action == "apr":
-        db.collection('withdrawals').document(wd_id).update({"status": "approved", "processed_by": query.from_user.id})
-        await query.edit_message_text(
-            f"✅ Approved Withdrawal for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", 
-            parse_mode="Markdown"
-        )
-        await context.bot.send_message(chat_id=user_id, text=f"✅ আপনার ৳{amount:.2f} উইথড্র সফল হয়েছে!")
-
-    elif action == "rej":
-        db.collection('withdrawals').document(wd_id).update({"status": "rejected", "processed_by": query.from_user.id})
-        db.collection('users').document(user_id).update({"balance": firestore.Increment(amount)})
-        await query.edit_message_text(
-            f"❌ Rejected & Refunded for `{user_id}` (৳{amount:.2f})\nBy: {query.from_user.first_name}", 
-            parse_mode="Markdown"
-        )
-        await context.bot.send_message(chat_id=user_id, text=f"❌ আপনার ৳{amount:.2f} উইথড্র বাতিল হয়েছে এবং ব্যালেন্স ফেরত দেওয়া হয়েছে।")
-
-# --- Task Submission System ---
-
-async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    config = get_config()
-
+    
     if not is_working_hour():
-        s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
-        e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
-
-        curr_bd_time = get_bd_time().strftime("%I:%M %p")
-
         await query.edit_message_text(
-            f"⛔ **এখন কাজের সময় নয়!**\n\n"
-            f"🕒 বর্তমান সময়: `{curr_bd_time}`\n"
-            f"⏰ কাজের সময়: `{s_time}` থেকে `{e_time}` পর্যন্ত।\n"
-            f"অনুগ্রহ করে নির্দিষ্ট সময়ে চেষ্টা করুন।",
+            "⛔ **এখন কাজের সময় নয়!**\nসময়সূচী দেখুন।", 
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
         )
         return ConversationHandler.END
 
+    config = get_config()
     apps = config.get('monitored_apps', [])
 
     if not apps:
-        await query.edit_message_text(
-            "❌ বর্তমানে কোনো কাজ নেই।", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-        )
+        await query.edit_message_text("❌ বর্তমানে কোনো কাজ নেই।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
         return ConversationHandler.END
 
     buttons = []
     for app in apps:
-        limit = app.get('limit', 1000)
         count = get_app_task_count(app['id'])
-
-        btn_text = f"📱 {app['name']} ({count}/{limit}) - ৳{config['task_price']:.0f}"
-
-        if count >= limit:
-            btn_text = f"⛔ {app['name']} (Full) - ৳{config['task_price']:.0f}"
-
-        buttons.append([InlineKeyboardButton(btn_text, callback_data=f"sel_{app['id']}")])
+        limit = app.get('limit', 1000)
+        btn_txt = f"📱 {app['name']} ({count}/{limit})"
+        if count >= limit: btn_txt += " [Full]"
+        buttons.append([InlineKeyboardButton(btn_txt, callback_data=f"sel_{app['id']}")])
 
     buttons.append([InlineKeyboardButton("❌ বাতিল", callback_data="cancel")])
-
-    await query.edit_message_text(
-        "কোন অ্যাপে কাজ করতে চান সিলেক্ট করুন:", 
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    await query.edit_message_text("কোন অ্যাপে কাজ করবেন?", reply_markup=InlineKeyboardMarkup(buttons))
     return T_APP_SELECT
 
-async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def task_app_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "cancel": 
@@ -772,131 +458,119 @@ async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     app_id = query.data.split("sel_")[1]
     config = get_config()
     app = next((a for a in config['monitored_apps'] if a['id'] == app_id), None)
-
+    
     if not app:
-        await query.edit_message_text(
-            "❌ অ্যাপটি খুঁজে পাওয়া যায়নি।", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-        )
+        await query.edit_message_text("❌ অ্যাপ পাওয়া যায়নি।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
         return ConversationHandler.END
 
-    limit = app.get('limit', 1000)
     count = get_app_task_count(app_id)
+    if count >= app.get('limit', 1000):
+        await query.edit_message_text("⛔ এই অ্যাপের লিমিট শেষ!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+        return ConversationHandler.END
 
-    if count >= limit:
-         await query.edit_message_text(
-             f"⛔ **দুঃখিত!**\n\n`{app['name']}` এর কাজের লিমিট শেষ হয়ে গেছে ({count}/{limit})।\nএডমিন লিমিট বাড়ালে আবার কাজ করতে পারবেন।", 
-             parse_mode="Markdown",
-             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-         )
-         return ConversationHandler.END
-
-    context.user_data['tid'] = app_id
-
-    msg = (
-        "✍️ **রিভিউ নাম (Review Name)** দিন:\n\n"
-        "⚠️ **সতর্কতা:** প্লে-স্টোরে যে নাম দিয়ে রিভিউ দিয়েছেন, হুবহু সেই নাম দিতে হবে। "
-        "ভুল নাম দিলে ব্যালেন্স এড হবে না।"
+    context.user_data['task_app_id'] = app_id
+    context.user_data['task_app_name'] = app['name']
+    
+    await query.edit_message_text(
+        f"📱 **App:** {app['name']}\n\n✍️ প্লে-স্টোরে যে **নাম (Name)** দিয়ে রিভিউ দিয়েছেন সেটি লিখুন:",
+        parse_mode="Markdown"
     )
-    await query.edit_message_text(msg, parse_mode="Markdown")
     return T_REVIEW_NAME
 
-async def get_review_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['rname'] = update.message.text.strip()
-    await update.message.reply_text("আপনার ইমেইল এড্রেস দিন:")
+async def task_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['task_rname'] = update.message.text.strip()
+    await update.message.reply_text("📧 আপনার ইমেইল এড্রেস দিন:")
     return T_EMAIL
 
-async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['email'] = update.message.text
-    await update.message.reply_text("মোবাইল মডেল/ডিভাইস নাম:")
+async def task_get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['task_email'] = update.message.text.strip()
+    await update.message.reply_text("📱 ডিভাইসের নাম/মডেল লিখুন:")
     return T_DEVICE
 
-async def get_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['dev'] = update.message.text
-    await update.message.reply_text("স্ক্রিনশট এর লিংক দিন অথবা সরাসরি ছবি আপলোড করুন:")
+async def task_get_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['task_device'] = update.message.text.strip()
+    await update.message.reply_text("🖼️ রিভিউ এর স্ক্রিনশট পাঠান (অথবা লিংক দিন):")
     return T_SS
 
-async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = context.user_data
-    config = get_config()
+async def task_submit_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-
-    screenshot_link = ""
-
+    config = get_config()
+    data = context.user_data
+    
+    ss_link = "No Image"
+    
     if update.message.photo:
-        wait_msg = await update.message.reply_text("📤 ছবি আপলোড হচ্ছে... অনুগ্রহ করে অপেক্ষা করুন।")
+        wait_msg = await update.message.reply_text("📤 আপলোড হচ্ছে...")
         try:
-            photo = await update.message.photo[-1].get_file()
+            photo_file = await update.message.photo[-1].get_file()
             img_bytes = io.BytesIO()
-            await photo.download_to_memory(img_bytes)
+            await photo_file.download_to_memory(img_bytes)
             img_bytes.seek(0)
-
+            
             if IMGBB_API_KEY:
-                files = {'image': img_bytes}
-                payload = {'key': IMGBB_API_KEY}
-                response = requests.post("https://api.imgbb.com/1/upload", data=payload, files=files)
-                result = response.json()
-
-                if result.get('success'):
-                    screenshot_link = result['data']['url']
+                # Async upload via run_in_executor
+                def upload_img():
+                    return requests.post(
+                        "https://api.imgbb.com/1/upload",
+                        data={'key': IMGBB_API_KEY},
+                        files={'image': img_bytes}
+                    ).json()
+                
+                loop = asyncio.get_running_loop()
+                resp = await loop.run_in_executor(None, upload_img)
+                
+                if resp.get('success'):
+                    ss_link = resp['data']['url']
                 else:
-                    await wait_msg.edit_text("❌ ছবি আপলোড ব্যর্থ হয়েছে। আবার চেষ্টা করুন বা লিংক দিন।")
+                    await wait_msg.edit_text("❌ ইমেজ আপলোড ফেইল্ড। আবার চেষ্টা করুন।")
                     return T_SS
             else:
-                await wait_msg.edit_text("❌ ImgBB API Key কনফিগার করা নেই। এডমিনের সাথে যোগাযোগ করুন।")
-                return ConversationHandler.END
-
+                ss_link = "API Key Missing"
             await wait_msg.delete()
         except Exception as e:
             logger.error(f"Image Upload Error: {e}")
-            await wait_msg.edit_text("❌ টেকনিক্যাল সমস্যা হয়েছে। আবার চেষ্টা করুন।")
-            return ConversationHandler.END
-
-    elif update.message.text:
-        screenshot_link = update.message.text.strip()
-
+            await wait_msg.edit_text("❌ আপলোড সমস্যা। আবার পাঠান।")
+            return T_SS
+    elif update.message.text and "http" in update.message.text:
+        ss_link = update.message.text.strip()
     else:
-        await update.message.reply_text("❌ অনুগ্রহ করে ছবি বা লিংক দিন।")
+        await update.message.reply_text("❌ দয়া করে ছবি পাঠান।")
         return T_SS
 
-    app_name = next((a['name'] for a in config['monitored_apps'] if a['id'] == data['tid']), data['tid'])
-
-    task_ref = db.collection('tasks').add({
+    # Save to Firestore
+    task_data = {
         "user_id": str(user.id),
-        "app_id": data['tid'],
-        "review_name": data['rname'],
-        "email": data['email'],
-        "device": data['dev'],
-        "screenshot": screenshot_link,
+        "app_id": data['task_app_id'],
+        "review_name": data['task_rname'],
+        "email": data['task_email'],
+        "device": data['task_device'],
+        "screenshot": ss_link,
         "status": "pending",
         "submitted_at": datetime.now(),
         "price": config['task_price'],
-        "last_checked": datetime.now(),
         "check_count": 0
-    })
-
-    task_id = task_ref[1].id
-
+    }
+    
+    loop = asyncio.get_running_loop()
+    ref = await loop.run_in_executor(None, lambda: db.collection('tasks').add(task_data))
+    task_id = ref[1].id
+    
+    # Notify Admin
     log_msg = (
         f"📝 **New Task Submitted**\n"
-        f"👤 User: `{user.id}` ({user.first_name})\n"
-        f"📱 App: **{app_name}**\n"
-        f"✍️ Name: {data['rname']}\n"
-        f"📧 Email: {data['email']}\n"
-        f"📱 Device: {data['dev']}\n"
-        f"🖼 Proof: [View Screenshot]({screenshot_link})\n"
-        f"💰 Price: ৳{config['task_price']:.2f}\n"
-        f"⏰ Time: {datetime.now().strftime('%I:%M %p')}"
+        f"👤 User: `{user.id}`\n"
+        f"📱 App: {data['task_app_name']}\n"
+        f"✍️ Review Name: `{data['task_rname']}`\n"
+        f"🖼 Proof: [Link]({ss_link})"
     )
-
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Approve", callback_data=f"t_apr_{task_id}_{user.id}"),
          InlineKeyboardButton("❌ Reject", callback_data=f"t_rej_{task_id}_{user.id}")]
     ])
-
     await send_log_message(context, log_msg, kb)
+    
     await update.message.reply_text(
-        "✅ কাজ জমা হয়েছে! এডমিন চেক করে এপ্রুভ করবেন অথবা অটোমেটিক এপ্রুভ হবে।", 
+        "✅ **সফলভাবে জমা হয়েছে!**\nএডমিন চেক করার পর ব্যালেন্স যোগ হবে।", 
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
     )
     return ConversationHandler.END
@@ -904,1495 +578,417 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.callback_query:
-            await update.callback_query.edit_message_text(
-                "❌ বাতিল করা হয়েছে।", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-            )
+            await update.callback_query.edit_message_text("❌ বাতিল করা হয়েছে।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
         else:
-            await update.message.reply_text(
-                "❌ বাতিল করা হয়েছে।", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-            )
-    except:
-         try: 
-             await context.bot.send_message(
-                 chat_id=update.effective_chat.id, 
-                 text="❌ বাতিল করা হয়েছে।",
-                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-             )
-         except: pass
+            await update.message.reply_text("❌ বাতিল করা হয়েছে。", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+    except: pass
     return ConversationHandler.END
 
-async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ==========================================
+# 6. উইথড্র সিস্টেম
+# ==========================================
+
+async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user = get_user(query.from_user.id)
+    config = get_config()
+    
+    if user['balance'] < config['min_withdraw']:
+        await query.edit_message_text(
+            f"❌ অপর্যাপ্ত ব্যালেন্স!\nসর্বনিম্ন উইথড্র: ৳{config['min_withdraw']:.2f}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+        )
+        return ConversationHandler.END
+    
+    await query.edit_message_text(
+        "💳 পেমেন্ট মেথড সিলেক্ট করুন:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Bkash", callback_data="wdm_bkash"), InlineKeyboardButton("Nagad", callback_data="wdm_nagad")],
+            [InlineKeyboardButton("❌ বাতিল", callback_data="cancel")]
+        ])
+    )
+    return WD_METHOD
+
+async def withdraw_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "cancel": return await cancel_conv(update, context)
+    
+    context.user_data['wd_method'] = "Bkash" if "bkash" in query.data else "Nagad"
+    await query.edit_message_text(f"📝 আপনার {context.user_data['wd_method']} নাম্বারটি লিখুন:")
+    return WD_NUMBER
+
+async def withdraw_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['wd_number'] = update.message.text.strip()
+    await update.message.reply_text("💰 টাকার পরিমাণ লিখুন (Example: 50):")
+    return WD_AMOUNT
+
+async def withdraw_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        amount = float(update.message.text.strip())
+        user_id = str(update.effective_user.id)
+        config = get_config()
+        user = get_user(user_id)
+        
+        if amount < config['min_withdraw']:
+            await update.message.reply_text(f"❌ মিনিমাম উইথড্র ৳{config['min_withdraw']}")
+            return ConversationHandler.END
+            
+        if amount > user['balance']:
+            await update.message.reply_text("❌ ব্যালেন্স এর চেয়ে বেশি উইথড্র করা যাবে না।")
+            return ConversationHandler.END
+            
+        # Deduct Balance
+        db.collection('users').document(user_id).update({"balance": firestore.Increment(-amount)})
+        
+        # Create Request
+        wd_ref = db.collection('withdrawals').add({
+            "user_id": user_id,
+            "amount": amount,
+            "method": context.user_data['wd_method'],
+            "number": context.user_data['wd_number'],
+            "status": "pending",
+            "time": datetime.now()
+        })
+        
+        # Log
+        msg = f"💸 **New Withdraw**\n👤 User: `{user_id}`\n💰 Amount: ৳{amount}\n📱 {context.user_data['wd_method']}: `{context.user_data['wd_number']}`"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Pay", callback_data=f"wd_apr_{wd_ref[1].id}_{user_id}"),
+             InlineKeyboardButton("❌ Reject", callback_data=f"wd_rej_{wd_ref[1].id}_{user_id}")]
+        ])
+        await send_log_message(context, msg, kb)
+        
+        await update.message.reply_text("✅ উইথড্র রিকোয়েস্ট জমা হয়েছে!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+        
+    except ValueError:
+        await update.message.reply_text("❌ ভুল ইনপুট। শুধু সংখ্যা দিন।")
+    
+    return ConversationHandler.END
+
+# ==========================================
+# 7. এডমিন প্যানেল ও অ্যাকশন হ্যান্ডলার
+# ==========================================
+
+async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_admin(query.from_user.id):
-        await query.answer("⚠️ Only Admins can do this!", show_alert=True)
+        await query.answer("⛔ Access Denied", show_alert=True)
         return
+    
+    kb = [
+        [InlineKeyboardButton("👥 Users", callback_data="adm_users"), InlineKeyboardButton("⚙️ Settings", callback_data="adm_settings")],
+        [InlineKeyboardButton("📱 Apps", callback_data="adm_apps"), InlineKeyboardButton("💰 Withdrawals", callback_data="adm_wd")],
+        [InlineKeyboardButton("🔙 Exit", callback_data="back_home")]
+    ]
+    await query.edit_message_text("⚙️ **Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id): return
 
     data = query.data.split('_')
-    action = data[1]
-    task_id = data[2]
+    action = data[1] # apr/rej
+    item_id = data[2]
     user_id = data[3]
-
-    task_ref = db.collection('tasks').document(task_id)
-    task_doc = task_ref.get()
-
-    if not task_doc.exists:
-        await query.answer("Task not found", show_alert=True)
-        return
-
-    t_data = task_doc.to_dict()
-    if t_data['status'] != 'pending':
-        await query.answer(f"Task is already {t_data['status']}", show_alert=True)
-        await query.edit_message_reply_markup(None)
-        return
-
-    price = t_data.get('price', 0)
-
-    if action == "apr":
-        approve_task(task_id, user_id, price)
-        await query.edit_message_text(
-            f"✅ Task Approved Manually\nUser: `{user_id}` (৳{price:.2f})\nBy: {query.from_user.first_name}", 
-            parse_mode="Markdown"
-        )
-        await context.bot.send_message(chat_id=user_id, text=f"🎉 আপনার কাজটি এপ্রুভ হয়েছে! ৳{price:.2f} যোগ হয়েছে।")
-
-    elif action == "rej":
-        task_ref.update({"status": "rejected", "processed_by": query.from_user.id})
-        await query.edit_message_text(
-            f"❌ Task Rejected Manually\nUser: `{user_id}`\nBy: {query.from_user.first_name}", 
-            parse_mode="Markdown"
-        )
-        await context.bot.send_message(chat_id=user_id, text="❌ আপনার কাজটি রিজেক্ট করা হয়েছে। সঠিক তথ্য দিয়ে আবার চেষ্টা করুন।")
-
-# ==========================================
-# 5. অটোমেশন ও গ্রুপ নোটিফিকেশন
-# ==========================================
-
-def approve_task(task_id, user_id, amount):
-    task_ref = db.collection('tasks').document(task_id)
-    t_data = task_ref.get().to_dict()
-    if t_data and t_data['status'] == 'pending':
-        task_ref.update({
-            "status": "approved", 
-            "approved_at": datetime.now(),
-            "auto_approved": True
-        })
-        db.collection('users').document(str(user_id)).update({
-            "balance": firestore.Increment(amount),
-            "total_tasks": firestore.Increment(1)
-        })
+    
+    if data[0] == "t": # Task Action
+        task_ref = db.collection('tasks').document(item_id)
+        task = task_ref.get().to_dict()
         
-        user_ref = db.collection('users').document(str(user_id))
-        user_data = user_ref.get().to_dict()
-        if user_data.get('referrer'):
-            config = get_config()
-            referrer_id = user_data['referrer']
-            db.collection('users').document(referrer_id).update({
-                "balance": firestore.Increment(config['referral_bonus'])
+        if not task or task['status'] != 'pending':
+            await query.edit_message_text("⚠️ Already Processed.")
+            return
+
+        if action == "apr":
+            task_ref.update({"status": "approved", "approved_at": datetime.now()})
+            db.collection('users').document(user_id).update({
+                "balance": firestore.Increment(task['price']),
+                "total_tasks": firestore.Increment(1)
             })
             
-            try:
-                send_telegram_message(
-                    f"🎉 রেফারেল বোনাস!\nআপনার রেফার করা ইউজার একটি টাস্ক সম্পন্ন করেছেন। ৳{config['referral_bonus']:.2f} বোনাস পেলেন!",
-                    chat_id=referrer_id
-                )
-            except:
-                pass
+            # Referral Bonus
+            u_doc = db.collection('users').document(user_id).get().to_dict()
+            if u_doc.get('referrer'):
+                ref_bonus = get_config().get('referral_bonus', 0)
+                db.collection('users').document(u_doc['referrer']).update({"balance": firestore.Increment(ref_bonus)})
+
+            await context.bot.send_message(user_id, f"🎉 আপনার কাজটি এপ্রুভ হয়েছে! ৳{task['price']} যোগ হয়েছে।")
+            await query.edit_message_text(f"✅ Approved Task for User {user_id}")
+            
+        elif action == "rej":
+            task_ref.update({"status": "rejected"})
+            await context.bot.send_message(user_id, "❌ আপনার কাজটি রিজেক্ট করা হয়েছে।")
+            await query.edit_message_text(f"❌ Rejected Task for User {user_id}")
+
+    elif data[0] == "wd": # Withdrawal Action
+        wd_ref = db.collection('withdrawals').document(item_id)
+        wd = wd_ref.get().to_dict()
         
-        return True
-    return False
+        if not wd or wd['status'] != 'pending':
+            await query.edit_message_text("⚠️ Already Processed.")
+            return
 
-def reject_task(task_id, reason="Review name not matched within 24 hours"):
-    task_ref = db.collection('tasks').document(task_id)
-    t_data = task_ref.get().to_dict()
-    if t_data and t_data['status'] == 'pending':
-        task_ref.update({
-            "status": "rejected", 
-            "rejected_at": datetime.now(),
-            "reject_reason": reason,
-            "auto_rejected": True
-        })
-        return True
-    return False
+        if action == "apr":
+            wd_ref.update({"status": "approved"})
+            await context.bot.send_message(user_id, f"✅ আপনার ৳{wd['amount']} উইথড্র সফল হয়েছে!")
+            await query.edit_message_text(f"✅ Paid ৳{wd['amount']} to {user_id}")
+            
+        elif action == "rej":
+            wd_ref.update({"status": "rejected"})
+            db.collection('users').document(user_id).update({"balance": firestore.Increment(wd['amount'])})
+            await context.bot.send_message(user_id, f"❌ আপনার উইথড্র রিজেক্ট হয়েছে। টাকা ফেরত দেওয়া হয়েছে।")
+            await query.edit_message_text(f"❌ Rejected WD for {user_id}")
 
-def check_playstore_review(app_id, review_name):
-    """Check if review exists in Play Store"""
-    try:
-        reviews, _ = play_reviews(app_id, count=50, sort=Sort.NEWEST)
-        for review in reviews:
-            if review['userName'].lower().strip() == review_name.lower().strip():
-                return review['score'], review['content'], review['at']
-        return None, None, None
-    except Exception as e:
-        logger.error(f"Play Store check error: {e}")
-        return None, None, None
-
-def check_24_hour_reviews():
-    """Check and approve/reject tasks based on 24-hour rule"""
-    logger.info("Running 24-hour review check...")
+# --- Apps Management ---
+async def adm_apps_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
     config = get_config()
-    log_id = config.get('log_channel_id', OWNER_ID)
+    apps = config.get('monitored_apps', [])
     
-    try:
-        # Get all pending tasks older than 24 hours
-        cutoff_time = datetime.now() - timedelta(hours=24)
-        pending_tasks = db.collection('tasks').where('status', '==', 'pending').stream()
+    txt = "📱 **App List:**\n"
+    for a in apps:
+        txt += f"- {a['name']} (`{a['id']}`)\n"
         
-        approved_count = 0
-        rejected_count = 0
-        
-        for task_doc in pending_tasks:
-            task_data = task_doc.to_dict()
-            task_time = task_data.get('submitted_at')
-            
-            if task_time and task_time.replace(tzinfo=None) < cutoff_time:
-                # Check if review name matches in Play Store
-                rating, content, review_time = check_playstore_review(
-                    task_data['app_id'], 
-                    task_data['review_name']
-                )
-                
-                if rating == 5:  # 5-star review found
-                    # Approve the task
-                    if approve_task(task_doc.id, task_data['user_id'], task_data.get('price', 0)):
-                        approved_count += 1
-                        send_telegram_message(
-                            f"✅ **24-Hour Auto Approved**\n"
-                            f"User: `{task_data['user_id']}`\n"
-                            f"Task: {task_doc.id}\n"
-                            f"Review: {task_data['review_name']}\n"
-                            f"Rating: ⭐⭐⭐⭐⭐",
-                            chat_id=log_id
-                        )
-                        send_telegram_message(
-                            f"🎉 আপনার কাজটি ২৪ ঘন্টা পর চেক করে এপ্রুভ করা হয়েছে! ৳{task_data.get('price', 0):.2f} যোগ হয়েছে।",
-                            chat_id=task_data['user_id']
-                        )
-                else:
-                    # Reject the task
-                    if reject_task(task_doc.id, "Review name not found or not 5-star within 24 hours"):
-                        rejected_count += 1
-                        send_telegram_message(
-                            f"❌ **24-Hour Auto Rejected**\n"
-                            f"User: `{task_data['user_id']}`\n"
-                            f"Task: {task_doc.id}\n"
-                            f"Reason: Review name not matched or not 5-star",
-                            chat_id=log_id
-                        )
-                        send_telegram_message(
-                            f"❌ আপনার কাজটি ২৪ ঘন্টা পর চেক করে রিজেক্ট করা হয়েছে। কারণ: রিভিউ নাম মিলেনি বা ৫-স্টার রিভিউ দেওয়া হয়নি।",
-                            chat_id=task_data['user_id']
-                        )
-        
-        if approved_count > 0 or rejected_count > 0:
-            send_telegram_message(
-                f"📊 **24-Hour Check Complete**\n"
-                f"✅ Approved: {approved_count}\n"
-                f"❌ Rejected: {rejected_count}\n"
-                f"⏰ Time: {datetime.now().strftime('%I:%M %p')}",
-                chat_id=log_id
-            )
-            
-    except Exception as e:
-        logger.error(f"24-hour check error: {e}")
+    kb = [
+        [InlineKeyboardButton("➕ Add App", callback_data="add_app"), InlineKeyboardButton("➖ Remove App", callback_data="rmv_app")],
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]
+    ]
+    await query.edit_message_text(txt, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-def daily_auto_approve():
-    """Daily auto approve at configured time"""
-    logger.info("Running daily auto approve...")
+# Add App Logic
+async def add_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("📱 App Package ID দিন (Example: com.facebook.katana):")
+    return ADD_APP_ID
+
+async def add_app_id_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['new_app_id'] = update.message.text.strip()
+    await update.message.reply_text("📝 অ্যাপের নাম দিন:")
+    return ADD_APP_NAME
+
+async def add_app_name_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['new_app_name'] = update.message.text.strip()
+    await update.message.reply_text("🔢 টাস্ক লিমিট দিন (Example: 100):")
+    return ADD_APP_LIMIT
+
+async def add_app_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        limit = int(update.message.text.strip())
+        new_app = {
+            "id": context.user_data['new_app_id'],
+            "name": context.user_data['new_app_name'],
+            "limit": limit
+        }
+        config = get_config()
+        apps = config.get('monitored_apps', [])
+        apps.append(new_app)
+        update_config({"monitored_apps": apps})
+        
+        await update.message.reply_text("✅ অ্যাপ যুক্ত হয়েছে!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ ভুল লিমিট। আবার চেষ্টা করুন।")
+        return ADD_APP_LIMIT
+
+# Remove App Logic
+async def rmv_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = get_config()
-    log_id = config.get('log_channel_id', OWNER_ID)
-    auto_time = config.get('auto_approve_time', '20:30')
-    
-    try:
-        # Get all pending tasks
-        pending_tasks = db.collection('tasks').where('status', '==', 'pending').stream()
-        approved_count = 0
+    apps = config.get('monitored_apps', [])
+    if not apps:
+        await update.callback_query.answer("No Apps!", show_alert=True)
+        return ConversationHandler.END
         
-        for task_doc in pending_tasks:
-            task_data = task_doc.to_dict()
-            
-            # Check if review exists in Play Store
-            rating, content, review_time = check_playstore_review(
-                task_data['app_id'], 
-                task_data['review_name']
-            )
-            
-            if rating == 5:  # 5-star review found
-                # Approve the task
-                if approve_task(task_doc.id, task_data['user_id'], task_data.get('price', 0)):
-                    approved_count += 1
-        
-        if approved_count > 0:
-            send_telegram_message(
-                f"✅ **Daily Auto Approve Complete**\n"
-                f"📅 Date: {datetime.now().strftime('%d/%m/%Y')}\n"
-                f"🕒 Time: {auto_time}\n"
-                f"✅ Approved Tasks: {approved_count}\n"
-                f"🎉 All matching reviews have been approved!",
-                chat_id=log_id
-            )
-            
-    except Exception as e:
-        logger.error(f"Daily auto approve error: {e}")
+    btns = [[InlineKeyboardButton(a['name'], callback_data=f"rma_{i}")] for i, a in enumerate(apps)]
+    btns.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
+    await update.callback_query.edit_message_text("Select App to Remove:", reply_markup=InlineKeyboardMarkup(btns))
+    return REMOVE_APP_SELECT
 
-def run_automation():
-    """Main automation loop with scheduled tasks"""
-    logger.info("Automation Started with scheduled tasks...")
+async def rmv_app_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.data == "cancel": return await cancel_conv(update, context)
     
-    # Schedule daily auto approve at 20:30
-    schedule.every().day.at("20:30").do(daily_auto_approve)
+    idx = int(query.data.split("rma_")[1])
+    config = get_config()
+    apps = config.get('monitored_apps', [])
     
-    # Schedule 24-hour check every 6 hours
-    schedule.every(6).hours.do(check_24_hour_reviews)
+    if 0 <= idx < len(apps):
+        del apps[idx]
+        update_config({"monitored_apps": apps})
+        await query.edit_message_text("✅ অ্যাপ রিমুভ করা হয়েছে!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
     
-    # Regular Play Store monitoring (every 15 minutes)
+    return ConversationHandler.END
+
+# ==========================================
+# 8. অটোমেশন ও শিডিউলার (Thread Safe)
+# ==========================================
+
+def run_background_checks():
+    """Background thread to check reviews"""
+    logger.info("Automation Thread Started")
+    
     while True:
         try:
-            # Run scheduled tasks
-            schedule.run_pending()
-            
-            # Regular Play Store monitoring
+            # 1. Check 24-hour Pending Tasks
+            pending_tasks = db.collection('tasks').where('status', '==', 'pending').stream()
             config = get_config()
-            apps = config.get('monitored_apps', [])
-            log_id = config.get('log_channel_id', OWNER_ID)
-
-            for app in apps:
-                try:
-                    reviews, _ = play_reviews(app['id'], count=20, sort=Sort.NEWEST)
-                    for r in reviews:
-                        rid = r['reviewId']
-                        r_date = r['at']
-                        
-                        # Check if review is within last 48 hours
-                        if r_date < datetime.now() - timedelta(hours=48):
-                            continue
-
-                        # Store review for future reference
-                        if not db.collection('seen_reviews').document(rid).get().exists:
-                            date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
-                            ai_txt = get_ai_summary(r['content'], r['score'])
-
-                            msg = (
-                                f"🔔 **Play Store Review Found**\n"
-                                f"📱 App: `{app['name']}`\n"
-                                f"👤 Name: **{r['userName']}**\n"
-                                f"📅 Date: `{date_str}`\n"
-                                f"⭐ Rating: {r['score']}/5\n"
-                                f"💬 Comment: {r['content'][:100]}...\n"
-                                f"🤖 AI Mood: {ai_txt}"
-                            )
-                            send_telegram_message(msg, chat_id=log_id)
-                            db.collection('seen_reviews').document(rid).set({
-                                "app_id": app['id'],
-                                "user_name": r['userName'],
-                                "rating": r['score'],
-                                "content": r['content'],
-                                "review_date": r_date,
-                                "scraped_at": datetime.now()
-                            })
-
-                            # Auto approve if 5-star and name matches pending task
-                            if r['score'] == 5:
-                                p_tasks = db.collection('tasks')\
-                                    .where('app_id', '==', app['id'])\
-                                    .where('status', '==', 'pending')\
-                                    .where('review_name', '==', r['userName'])\
-                                    .stream()
-                                
-                                for t in p_tasks:
-                                    td = t.to_dict()
-                                    price = td.get('price', 0)
-                                    if approve_task(t.id, td['user_id'], price):
-                                        send_telegram_message(
-                                            f"🤖 **Auto Approved!**\n"
-                                            f"User: `{td['user_id']}`\n"
-                                            f"App: {app['name']}\n"
-                                            f"Name: {td['review_name']}\n"
-                                            f"💰 Amount: ৳{price:.2f}", 
-                                            chat_id=log_id
-                                        )
-                                        send_telegram_message(
-                                            f"🎉 আপনার কাজটি **অটোমেটিক এপ্রুভ** হয়েছে! ৳{price:.2f} যোগ হয়েছে।", 
-                                            chat_id=td['user_id']
-                                        )
-                                    break
-                except Exception as e:
-                    logger.error(f"App Check Error: {e}")
+            
+            for t in pending_tasks:
+                task = t.to_dict()
+                task_id = t.id
+                
+                # Check age (24 hours check)
+                submitted = task['submitted_at'].replace(tzinfo=None)
+                if datetime.now() - submitted > timedelta(hours=24):
                     
-            time.sleep(900)  # Sleep for 15 minutes
+                    # Scrape Google Play
+                    try:
+                        reviews, _ = play_reviews(
+                            task['app_id'],
+                            count=50, # Check last 50 reviews
+                            sort=Sort.NEWEST
+                        )
+                        
+                        found = False
+                        for r in reviews:
+                            # Name match logic (Case insensitive, stripped)
+                            if r['userName'].strip().lower() == task['review_name'].strip().lower():
+                                # Check Rating
+                                if r['score'] == 5:
+                                    # Approve
+                                    db.collection('tasks').document(task_id).update({
+                                        "status": "approved",
+                                        "approved_at": datetime.now(),
+                                        "auto_approved": True
+                                    })
+                                    db.collection('users').document(task['user_id']).update({
+                                        "balance": firestore.Increment(task['price']),
+                                        "total_tasks": firestore.Increment(1)
+                                    })
+                                    
+                                    # Send Request to Telegram API directly (avoid async loop conflict)
+                                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={
+                                        "chat_id": config.get('log_channel_id', OWNER_ID),
+                                        "text": f"🤖 **Auto Approved**\nUser: {task['user_id']}\nApp: {task['app_id']}",
+                                        "parse_mode": "Markdown"
+                                    })
+                                    found = True
+                                    break
+                        
+                        if not found:
+                            # Reject after 24 hours if not found
+                            db.collection('tasks').document(task_id).update({
+                                "status": "rejected",
+                                "note": "Review not found after 24h"
+                            })
+                            
+                    except Exception as e:
+                        logger.error(f"Scrape Error for {task_id}: {e}")
+            
+            # Sleep to save resources
+            time.sleep(3600) # Check every hour
             
         except Exception as e:
-            logger.error(f"Automation Loop Error: {e}")
+            logger.error(f"Background Loop Error: {e}")
             time.sleep(60)
 
 # ==========================================
-# 6. ওয়েবসাইট API ইন্টিগ্রেশন
+# 9. ফ্লাস্ক সার্ভার (Web + Keep Alive)
 # ==========================================
 
 app = Flask(__name__)
 
 @app.route('/')
-def home(): 
-    return "Bot is Alive & Updated!"
+def home():
+    return "Bot is Running! Status: 200 OK"
 
-@app.route('/api/web_submit', methods=['POST'])
-def web_submit_task():
-    """API endpoint for website task submission"""
-    try:
-        # Authentication
-        auth_token = request.headers.get('Authorization')
-        if not auth_token or auth_token != f"Bearer {WEB_API_TOKEN}":
-            return jsonify({"error": "Unauthorized"}), 401
-        
-        data = request.json
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-        
-        # Required fields
-        required_fields = ['user_id', 'app_id', 'review_name', 'email', 'device', 'screenshot']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({"error": f"Missing field: {field}"}), 400
-        
-        # Get user
-        user = get_user(data['user_id'])
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-        
-        if user.get('is_blocked'):
-            return jsonify({"error": "User is blocked"}), 403
-        
-        # Get config
-        config = get_config()
-        
-        # Check app
-        app_info = next((a for a in config['monitored_apps'] if a['id'] == data['app_id']), None)
-        if not app_info:
-            return jsonify({"error": "App not found"}), 404
-        
-        # Check limit
-        limit = app_info.get('limit', 1000)
-        count = get_app_task_count(data['app_id'])
-        if count >= limit:
-            return jsonify({"error": "App limit reached"}), 400
-        
-        # Save task
-        task_ref = db.collection('tasks').add({
-            "user_id": str(data['user_id']),
-            "app_id": data['app_id'],
-            "review_name": data['review_name'],
-            "email": data['email'],
-            "device": data['device'],
-            "screenshot": data['screenshot'],
-            "status": "pending",
-            "submitted_at": datetime.now(),
-            "price": config['task_price'],
-            "source": "website",
-            "last_checked": datetime.now(),
-            "check_count": 0
-        })
-        
-        task_id = task_ref[1].id
-        
-        # Send to log channel
-        log_msg = (
-            f"🌐 **Website Task Submitted**\n"
-            f"👤 User: `{data['user_id']}` ({user.get('name', 'N/A')})\n"
-            f"📱 App: **{app_info['name']}**\n"
-            f"✍️ Name: {data['review_name']}\n"
-            f"📧 Email: {data['email']}\n"
-            f"📱 Device: {data['device']}\n"
-            f"🖼 Proof: [View Screenshot]({data['screenshot']})\n"
-            f"💰 Price: ৳{config['task_price']:.2f}\n"
-            f"⏰ Time: {datetime.now().strftime('%I:%M %p')}"
-        )
-        
-        # Send to Telegram
-        send_telegram_message(
-            log_msg,
-            chat_id=config.get('log_channel_id', OWNER_ID)
-        )
-        
-        # Auto check and approve if possible
-        rating, content, review_time = check_playstore_review(data['app_id'], data['review_name'])
-        if rating == 5:
-            approve_task(task_id, data['user_id'], config['task_price'])
-            return jsonify({
-                "success": True,
-                "message": "Task submitted and auto-approved",
-                "task_id": task_id,
-                "auto_approved": True
-            }), 200
-        
-        return jsonify({
-            "success": True,
-            "message": "Task submitted successfully",
-            "task_id": task_id,
-            "auto_approved": False
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Web submit error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/web_withdraw', methods=['POST'])
-def web_withdraw_request():
-    """API endpoint for website withdrawal requests"""
-    try:
-        # Authentication
-        auth_token = request.headers.get('Authorization')
-        if not auth_token or auth_token != f"Bearer {WEB_API_TOKEN}":
-            return jsonify({"error": "Unauthorized"}), 401
-        
-        data = request.json
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-        
-        # Required fields
-        required_fields = ['user_id', 'method', 'number', 'amount']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({"error": f"Missing field: {field}"}), 400
-        
-        # Get user
-        user = get_user(data['user_id'])
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-        
-        if user.get('is_blocked'):
-            return jsonify({"error": "User is blocked"}), 403
-        
-        # Get config
-        config = get_config()
-        
-        # Check minimum withdrawal
-        if float(data['amount']) < config['min_withdraw']:
-            return jsonify({
-                "error": f"Minimum withdrawal amount is ৳{config['min_withdraw']:.2f}"
-            }), 400
-        
-        # Check balance
-        if float(data['amount']) > user['balance']:
-            return jsonify({"error": "Insufficient balance"}), 400
-        
-        # Process withdrawal
-        db.collection('users').document(str(data['user_id'])).update({
-            "balance": firestore.Increment(-float(data['amount']))
-        })
-        
-        wd_ref = db.collection('withdrawals').add({
-            "user_id": str(data['user_id']),
-            "user_name": user.get('name', 'Unknown'),
-            "amount": float(data['amount']),
-            "method": data['method'],
-            "number": data['number'],
-            "status": "pending",
-            "time": datetime.now(),
-            "source": "website"
-        })
-        
-        wd_id = wd_ref[1].id
-        
-        # Send to log channel
-        log_msg = (
-            f"🌐 **Website Withdrawal Request**\n"
-            f"👤 User: `{data['user_id']}` ({user.get('name', 'Unknown')})\n"
-            f"💰 Amount: ৳{float(data['amount']):.2f}\n"
-            f"📱 Method: {data['method']} ({data['number']})\n"
-            f"🔢 Balance Left: ৳{user['balance'] - float(data['amount']):.2f}"
-        )
-        
-        send_telegram_message(
-            log_msg,
-            chat_id=config.get('log_channel_id', OWNER_ID)
-        )
-        
-        return jsonify({
-            "success": True,
-            "message": "Withdrawal request submitted",
-            "withdrawal_id": wd_id
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Web withdraw error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/status', methods=['GET'])
-def api_status():
-    """API status check"""
-    return jsonify({
-        "status": "online",
-        "timestamp": datetime.now().isoformat(),
-        "version": "2.0"
-    }), 200
+@app.route('/keep_alive', methods=['GET'])
+def keep_alive():
+    return jsonify({"status": "alive", "timestamp": time.time()})
 
 def run_flask():
-    """Run Flask server"""
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 # ==========================================
-# 7. এডমিন প্যানেল
-# ==========================================
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not is_admin(query.from_user.id): 
-        await query.answer("⚠️ শুধুমাত্র এডমিনরা এক্সেস করতে পারবেন!", show_alert=True)
-        return
-
-    kb = [
-        [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Bonus", callback_data="adm_finance")],
-        [InlineKeyboardButton("📱 Apps Manage", callback_data="adm_apps"), InlineKeyboardButton("👮 Manage Admins", callback_data="adm_admins")],
-        [InlineKeyboardButton("🎨 Buttons & Time", callback_data="adm_content"), InlineKeyboardButton("📢 Log Channel", callback_data="adm_log")],
-        [InlineKeyboardButton("🤖 Auto Settings", callback_data="adm_auto"), InlineKeyboardButton("📊 Reports & Export", callback_data="adm_reports")],
-        [InlineKeyboardButton("🔙 Back to User Mode", callback_data="back_home")]
-    ]
-    await query.edit_message_text("⚙️ **Super Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "adm_users":
-        users = db.collection('users').stream()
-        total_u = 0
-        total_bal = 0.0
-        total_ref = 0
-        for u in users:
-            total_u += 1
-            total_bal += u.to_dict().get('balance', 0)
-            total_ref += u.to_dict().get('referral_count', 0)
-
-        msg = (
-            f"📊 **Statistics**\n\n"
-            f"👥 Total Users: `{total_u}`\n"
-            f"💰 Total Liability: `৳{total_bal:.2f}`\n"
-            f"👥 Total Referrals: `{total_ref}`\n"
-            f"📈 Active Today: Checking..."
-        )
-        kb = [[InlineKeyboardButton("🔍 Manage Specific User", callback_data="find_user")],
-              [InlineKeyboardButton("📈 Daily Report", callback_data="daily_report")],
-              [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "adm_finance":
-        config = get_config()
-        # Calculate total withdrawals
-        withdrawals_ref = db.collection('withdrawals').where('status', '==', 'approved').stream()
-        total_withdrawn = sum([w.to_dict().get('amount', 0) for w in withdrawals_ref])
-        
-        msg = (
-            f"💸 **Finance Overview**\n\n"
-            f"💰 Task Price: ৳{config['task_price']:.2f}\n"
-            f"🎁 Refer Bonus: ৳{config['referral_bonus']:.2f}\n"
-            f"📤 Min Withdraw: ৳{config['min_withdraw']:.2f}\n"
-            f"💵 Total Withdrawn: ৳{total_withdrawn:.2f}"
-        )
-        kb = [
-            [InlineKeyboardButton("✏️ Change Task Price", callback_data="ed_txt_task_price")],
-            [InlineKeyboardButton("✏️ Change Ref Bonus", callback_data="ed_txt_referral_bonus")],
-            [InlineKeyboardButton("✏️ Change Min Withdraw", callback_data="ed_txt_min_withdraw")],
-            [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
-        ]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "adm_auto":
-        config = get_config()
-        auto_time = config.get('auto_approve_time', '20:30')
-        check_interval = config.get('check_interval_hours', 24)
-        
-        msg = (
-            f"🤖 **Auto System Settings**\n\n"
-            f"⏰ Auto Approve Time: `{auto_time}`\n"
-            f"🔄 Check Interval: `{check_interval}` hours\n"
-            f"✅ Daily Auto Approve: Enabled\n"
-            f"❌ 24-Hour Auto Reject: Enabled"
-        )
-        kb = [
-            [InlineKeyboardButton("✏️ Set Auto Time", callback_data="set_auto_time")],
-            [InlineKeyboardButton("✏️ Set Check Interval", callback_data="set_check_interval")],
-            [InlineKeyboardButton("▶️ Run Manual Check", callback_data="run_manual_check")],
-            [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
-        ]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "adm_apps":
-        config = get_config()
-        apps_list = ""
-        if config['monitored_apps']:
-            for a in config['monitored_apps']:
-                limit = a.get('limit', 'N/A')
-                count = get_app_task_count(a['id'])
-                apps_list += f"- {a['name']} (Lim: {limit}, Done: {count})\n  ID: `{a['id']}`\n"
-        else:
-            apps_list = "No apps added."
-
-        msg = f"📱 **App Management**\n\n**Current Apps:**\n{apps_list}"
-        kb = [
-            [InlineKeyboardButton("➕ Add App", callback_data="add_app"), InlineKeyboardButton("➖ Remove App", callback_data="rmv_app")],
-            [InlineKeyboardButton("✏️ Edit App Limit", callback_data="edit_app_limit_start")],
-            [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
-        ]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "adm_content":
-        config = get_config()
-        st = config.get("work_start_time", "10:00")
-        et = config.get("work_end_time", "22:00")
-        at = config.get("auto_approve_time", "20:30")
-
-        kb = [
-            [InlineKeyboardButton(f"⏰ Start: {st}", callback_data="set_time_start"), InlineKeyboardButton(f"⏰ End: {et}", callback_data="set_time_end")],
-            [InlineKeyboardButton(f"🤖 Auto: {at}", callback_data="set_auto_time")],
-            [InlineKeyboardButton("📝 Edit Rules Text", callback_data="ed_txt_rules"), InlineKeyboardButton("⏰ Edit Schedule Text", callback_data="ed_txt_schedule")],
-            [InlineKeyboardButton("🔘 Button Names/Visibility", callback_data="ed_btns")],
-            [InlineKeyboardButton("➕ Add Custom Button", callback_data="add_cus_btn"), InlineKeyboardButton("➖ Remove Custom Button", callback_data="rmv_cus_btn")],
-            [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
-        ]
-        await query.edit_message_text("🎨 **Content & Time Settings**\nSet Working Hours (24H Format)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "adm_admins":
-        kb = [
-            [InlineKeyboardButton("➕ Add New Admin", callback_data="add_new_admin")],
-            [InlineKeyboardButton("➖ Remove Admin", callback_data="rmv_admin_role")],
-            [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
-        ]
-        await query.edit_message_text("👮 **Admin Management**\nAdd or Remove admins by Telegram ID.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "adm_log":
-        config = get_config()
-        curr_log = config.get('log_channel_id', 'Not Set')
-        msg = (
-            f"📢 **Log Channel Configuration**\n\n"
-            f"Current ID: `{curr_log}`\n\n"
-            "All Tasks and Withdrawals will be sent to this group/channel."
-            " Make sure the Bot is an Admin there!"
-        )
-        kb = [[InlineKeyboardButton("✏️ Set Channel ID", callback_data="set_log_id")],
-              [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "adm_reports":
-        # Calculate today's stats
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_tasks = db.collection('tasks').where('submitted_at', '>=', today_start).stream()
-        today_count = len(list(today_tasks))
-        
-        today_approved = db.collection('tasks').where('approved_at', '>=', today_start).where('status', '==', 'approved').stream()
-        approved_count = len(list(today_approved))
-        
-        msg = (
-            "📊 **Reports & Export**\n\n"
-            f"📅 **Today's Stats:**\n"
-            f"📝 Submitted: {today_count}\n"
-            f"✅ Approved: {approved_count}\n\n"
-            "Download Approved Tasks data as **CSV/Spreadsheet**.\n"
-            "You can share this file with buyers as proof."
-        )
-        kb = [
-            [InlineKeyboardButton("📜 All Time History (ALL)", callback_data="rep_all")],
-            [InlineKeyboardButton("📅 Last 7 Days (ALL)", callback_data="rep_7d")],
-            [InlineKeyboardButton("🕒 Last 24 Hours (ALL)", callback_data="rep_24h")],
-            [InlineKeyboardButton("📈 Daily Summary", callback_data="daily_summary")],
-            [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
-        ]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-
-    elif data == "daily_summary":
-        # Generate daily summary
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Get today's tasks
-        tasks_ref = db.collection('tasks').where('submitted_at', '>=', today_start).stream()
-        tasks_data = []
-        for t in tasks_ref:
-            tasks_data.append(t.to_dict())
-        
-        # Get today's withdrawals
-        withdrawals_ref = db.collection('withdrawals').where('time', '>=', today_start).stream()
-        withdrawals_data = []
-        for w in withdrawals_ref:
-            withdrawals_data.append(w.to_dict())
-        
-        # Calculate stats
-        total_tasks = len(tasks_data)
-        approved_tasks = len([t for t in tasks_data if t.get('status') == 'approved'])
-        pending_tasks = len([t for t in tasks_data if t.get('status') == 'pending'])
-        total_withdrawals = len(withdrawals_data)
-        approved_withdrawals = len([w for w in withdrawals_data if w.get('status') == 'approved'])
-        
-        msg = (
-            f"📈 **Daily Summary - {datetime.now().strftime('%d/%m/%Y')}**\n\n"
-            f"📊 **Tasks:**\n"
-            f"• Total: {total_tasks}\n"
-            f"• Approved: {approved_tasks}\n"
-            f"• Pending: {pending_tasks}\n\n"
-            f"💰 **Withdrawals:**\n"
-            f"• Total: {total_withdrawals}\n"
-            f"• Approved: {approved_withdrawals}\n\n"
-            f"📅 Generated: {datetime.now().strftime('%I:%M %p')}"
-        )
-        
-        await query.edit_message_text(msg, parse_mode="Markdown", 
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_reports")]]))
-
-    elif data == "run_manual_check":
-        # Run manual check
-        await query.answer("Running manual check...", show_alert=True)
-        check_24_hour_reviews()
-        daily_auto_approve()
-        await query.edit_message_text(
-            "✅ Manual check completed!\n\n• 24-hour review check done\n• Auto approve executed", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_auto")]])
-        )
-
-async def set_auto_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⏰ Enter AUTO APPROVE Time (24 Hour Format, e.g., 20:30):")
-    context.user_data['edit_key'] = 'auto_approve_time'
-    return ADMIN_EDIT_TEXT_VAL
-
-async def set_check_interval_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("🔄 Enter Check Interval in Hours (e.g., 24):")
-    context.user_data['edit_key'] = 'check_interval_hours'
-    return ADMIN_EDIT_TEXT_VAL
-
-async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    key_map = {
-        "ed_txt_rules": "rules_text", 
-        "ed_txt_schedule": "schedule_text", 
-        "ed_txt_referral_bonus": "referral_bonus",
-        "ed_txt_task_price": "task_price",
-        "ed_txt_min_withdraw": "min_withdraw",
-        "set_auto_time": "auto_approve_time",
-        "set_check_interval": "check_interval_hours",
-        "set_time_start": "work_start_time",
-        "set_time_end": "work_end_time"
-    }
-
-    key = key_map.get(query.data)
-    if not key: 
-        await query.answer("❌ Invalid option", show_alert=True)
-        return ConversationHandler.END
-
-    context.user_data['edit_key'] = key
-
-    config = get_config()
-    curr_val = config.get(key, "N/A")
-
-    await query.edit_message_text(f"📝 **Editing {key}**\nCurrent Value: `{curr_val}`\n\nEnter new value:")
-    return ADMIN_EDIT_TEXT_VAL
-
-async def edit_text_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text
-    key = context.user_data['edit_key']
-
-    if key in ["referral_bonus", "min_withdraw", "task_price", "check_interval_hours"]:
-        try: 
-            val = float(val)
-        except: 
-            await update.message.reply_text("❌ Must be a number")
-            return ADMIN_EDIT_TEXT_VAL
-
-    update_config({key: val})
-    await update.message.reply_text("✅ Saved!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def edit_buttons_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    config = get_config()
-    btns = config.get('buttons', DEFAULT_CONFIG['buttons'])
-
-    kb = []
-    for key, data in btns.items():
-        status = "✅" if data['show'] else "❌"
-        kb.append([
-            InlineKeyboardButton(f"{status} {data['text']}", callback_data=f"btntog_{key}"),
-            InlineKeyboardButton("✏️ Rename", callback_data=f"btnren_{key}")
-        ])
-    kb.append([InlineKeyboardButton("🔙 Back", callback_data="adm_content")])
-
-    await query.edit_message_text("Select Button to Edit:", reply_markup=InlineKeyboardMarkup(kb))
-
-async def button_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("btntog_"):
-        key = data.split("_")[1]
-        config = get_config()
-        curr = config['buttons'][key]['show']
-        config['buttons'][key]['show'] = not curr
-        update_config({"buttons": config['buttons']})
-        await edit_buttons_menu(update, context)
-
-    elif data.startswith("btnren_"):
-        context.user_data['ren_key'] = data.split("_")[1]
-        await query.edit_message_text(f"Enter new name for button:")
-        return ADMIN_EDIT_BTN_NAME
-
-async def button_rename_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_name = update.message.text
-    key = context.user_data['ren_key']
-    config = get_config()
-    config['buttons'][key]['text'] = new_name
-    update_config({"buttons": config['buttons']})
-    await update.message.reply_text("✅ Renamed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def add_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("Enter Button Name:")
-    return ADMIN_ADD_BTN_NAME
-
-async def add_custom_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['c_btn_name'] = update.message.text
-    await update.message.reply_text("Enter Button Link (URL with http:// or https://):")
-    return ADMIN_ADD_BTN_LINK
-
-async def add_custom_btn_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = update.message.text.strip()
-    name = context.user_data['c_btn_name']
-
-    # Validate URL
-    if not link.startswith(('http://', 'https://')):
-        await update.message.reply_text("❌ URL must start with http:// or https://. Please enter a valid URL:")
-        return ADMIN_ADD_BTN_LINK
-
-    config = get_config()
-    c_btns = config.get('custom_buttons', [])
-    c_btns.append({"text": name, "url": link})
-    update_config({"custom_buttons": c_btns})
-
-    await update.message.reply_text("✅ Button Added!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-# --- REMOVE CUSTOM BUTTON FUNCTIONS ---
-
-async def rmv_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config = get_config()
-    c_btns = config.get('custom_buttons', [])
-
-    if not c_btns:
-        await update.callback_query.answer("❌ কোনো কাস্টম বাটন পাওয়া যায়নি!", show_alert=True)
-        return ConversationHandler.END
-
-    kb = []
-    for i, btn in enumerate(c_btns):
-        kb.append([InlineKeyboardButton(f"🗑️ {btn['text']}", callback_data=f"rm_cus_btn_{i}")])
-
-    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-
-    await update.callback_query.edit_message_text("কোন বাটনটি রিমুভ করতে চান?", reply_markup=InlineKeyboardMarkup(kb))
-    return REMOVE_CUS_BTN
-
-async def rmv_custom_btn_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.data == "cancel": 
-        await cancel_conv(update, context)
-        return ConversationHandler.END
-
-    try:
-        idx = int(query.data.split("rm_cus_btn_")[1])
-        config = get_config()
-        c_btns = config.get('custom_buttons', [])
-
-        if 0 <= idx < len(c_btns):
-            removed_name = c_btns[idx]['text']
-            del c_btns[idx]
-            update_config({"custom_buttons": c_btns})
-
-            await query.edit_message_text(f"✅ বাটন '{removed_name}' রিমুভ করা হয়েছে!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        else:
-            await query.edit_message_text("❌ বাটন খুঁজে পাওয়া যায়নি।")
-
-    except Exception as e:
-        logger.error(f"Remove Custom Btn Error: {e}")
-        await query.edit_message_text("❌ এরর হয়েছে।")
-
-    return ConversationHandler.END
-
-# --- APP MANAGEMENT ---
-
-async def add_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("App Package ID (e.g. com.example.app):")
-    return ADD_APP_ID
-
-async def add_app_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['nid'] = update.message.text.strip()
-    await update.message.reply_text("App Name:")
-    return ADD_APP_NAME
-
-async def add_app_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['nname'] = update.message.text.strip()
-    await update.message.reply_text("Set Task Limit (e.g. 100):")
-    return ADD_APP_LIMIT
-
-async def add_app_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        limit = int(update.message.text.strip())
-        config = get_config()
-        apps = config.get('monitored_apps', [])
-
-        apps.append({
-            "id": context.user_data['nid'], 
-            "name": context.user_data['nname'],
-            "limit": limit
-        })
-
-        update_config({"monitored_apps": apps})
-        await update.message.reply_text(f"✅ App Added with limit {limit}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Limit must be a number. Try again.")
-        return ADD_APP_LIMIT
-
-async def rmv_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config = get_config()
-    apps = config.get('monitored_apps', [])
-    if not apps:
-        await update.callback_query.answer("No apps", show_alert=True)
-        return ConversationHandler.END
-
-    btns = [[InlineKeyboardButton(f"🗑️ {a['name']}", callback_data=f"rm_{i}")] for i, a in enumerate(apps)]
-    btns.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-    await update.callback_query.edit_message_text("Remove which app?", reply_markup=InlineKeyboardMarkup(btns))
-    return REMOVE_APP_SELECT
-
-async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.data == "cancel": 
-        await cancel_conv(update, context)
-        return ConversationHandler.END
-
-    try:
-        idx = int(query.data.split("rm_")[1])
-        config = get_config()
-        apps = config.get('monitored_apps', [])
-
-        if 0 <= idx < len(apps):
-            del apps[idx]
-            update_config({"monitored_apps": apps})
-            await query.edit_message_text("✅ App Removed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        else:
-            await query.edit_message_text("❌ Error: Invalid selection index.")
-    except:
-        await query.edit_message_text("❌ Error during removal.")
-
-    return ConversationHandler.END
-
-async def edit_app_limit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config = get_config()
-    apps = config.get('monitored_apps', [])
-    if not apps:
-        await update.callback_query.answer("No apps found", show_alert=True)
-        return ConversationHandler.END
-
-    btns = [[InlineKeyboardButton(f"{a['name']} (Limit: {a.get('limit', 'N/A')})", callback_data=f"edlim_{i}")] for i, a in enumerate(apps)]
-    btns.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-
-    await update.callback_query.edit_message_text("Select App to Edit Limit:", reply_markup=InlineKeyboardMarkup(btns))
-    return EDIT_APP_SELECT
-
-async def edit_app_limit_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.data == "cancel": 
-        await cancel_conv(update, context)
-        return ConversationHandler.END
-
-    idx = int(query.data.split("edlim_")[1])
-    context.user_data['ed_app_idx'] = idx
-
-    await query.edit_message_text("Enter New Limit (Number):")
-    return EDIT_APP_LIMIT_VAL
-
-async def edit_app_limit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        new_limit = int(update.message.text.strip())
-        idx = context.user_data['ed_app_idx']
-
-        config = get_config()
-        apps = config.get('monitored_apps', [])
-
-        if 0 <= idx < len(apps):
-            apps[idx]['limit'] = new_limit
-            update_config({"monitored_apps": apps})
-            await update.message.reply_text(f"✅ Limit updated to {new_limit}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        else:
-            await update.message.reply_text("❌ Error: App not found.")
-
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Invalid number.")
-        return EDIT_APP_LIMIT_VAL
-
-# --- User management ---
-
-async def find_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("🔍 Enter User ID to manage:")
-    return ADMIN_USER_SEARCH
-
-async def find_user_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    user = get_user(uid)
-    if not user:
-        await update.message.reply_text("❌ User not found. Try again or /cancel.")
-        return ADMIN_USER_SEARCH
-
-    context.user_data['mng_uid'] = uid
-    status = "🔴 Blocked" if user.get('is_blocked') else "🟢 Active"
-    role = "👑 Admin" if user.get('is_admin') else "👤 User"
-
-    msg = (
-        f"👤 **User Found**\n"
-        f"ID: `{uid}`\nName: {user.get('name', 'N/A')}\n"
-        f"Balance: ৳{user.get('balance', 0):.2f}\n"
-        f"Status: {status} | Role: {role}"
-    )
-
-    kb = [
-        [InlineKeyboardButton("➕ Add Money", callback_data="u_add_bal"), InlineKeyboardButton("➖ Deduct Money", callback_data="u_cut_bal")],
-        [InlineKeyboardButton("⛔ Block/Unblock", callback_data="u_toggle_block"), InlineKeyboardButton("👑 Make/Remove Admin", callback_data="u_toggle_admin")],
-        [InlineKeyboardButton("🔙 Cancel", callback_data="cancel")]
-    ]
-    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-    return ADMIN_USER_ACTION
-
-async def user_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    uid = context.user_data['mng_uid']
-
-    if data == "cancel": 
-        await cancel_conv(update, context)
-        return ConversationHandler.END
-
-    if data == "u_toggle_block":
-        user = get_user(uid)
-        new_stat = not user.get('is_blocked', False)
-        db.collection('users').document(uid).update({"is_blocked": new_stat})
-        await query.edit_message_text(f"✅ User {'Blocked' if new_stat else 'Unblocked'}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-
-    elif data == "u_toggle_admin":
-        if uid == str(OWNER_ID):
-            await query.answer("Cannot change owner role", show_alert=True)
-            return
-        user = get_user(uid)
-        new_stat = not user.get('is_admin', False)
-        db.collection('users').document(uid).update({"is_admin": new_stat})
-        await query.edit_message_text(f"✅ User role changed to {'Admin' if new_stat else 'User'}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-
-    elif data in ["u_add_bal", "u_cut_bal"]:
-        context.user_data['bal_action'] = "add" if "add" in data else "cut"
-        await query.edit_message_text(f"Enter amount to {'Add' if 'add' in data else 'Deduct'}:")
-        return ADMIN_USER_AMOUNT
-
-async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amount = float(update.message.text)
-        uid = context.user_data['mng_uid']
-        action = context.user_data['bal_action']
-
-        final_amt = amount if action == "add" else -amount
-        db.collection('users').document(uid).update({"balance": firestore.Increment(final_amt)})
-
-        await update.message.reply_text(f"✅ Successfully {'Added' if action=='add' else 'Deduct'} ৳{amount:.2f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-    except:
-        await update.message.reply_text("❌ Invalid Amount.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-
-# ==========================================
-# 8. মিসিং ফাংশন যোগ করা হয়েছে
-# ==========================================
-
-async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("কাজ শুরুর সময় দিন (24H ফরম্যাট, যেমন: 15:30):")
-    context.user_data['edit_key'] = 'work_start_time'
-    return ADMIN_SET_START_TIME
-
-async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    try:
-        # Validate time format
-        datetime.strptime(val, "%H:%M")
-        update_config({'work_start_time': val})
-        await update.message.reply_text(f"✅ সময় সেট হয়েছে: {val}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ ভুল ফরম্যাট। HH:MM (24H) ফরম্যাটে দিন।")
-        return ADMIN_SET_START_TIME
-
-async def set_time_end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("কাজ শেষের সময় দিন (24H ফরম্যাট, যেমন: 23:00):")
-    context.user_data['edit_key'] = 'work_end_time'
-    return ADMIN_SET_END_TIME
-
-async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    try:
-        datetime.strptime(val, "%H:%M")
-        update_config({'work_end_time': val})
-        await update.message.reply_text(f"✅ সময় সেট হয়েছে: {val}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ ভুল ফরম্যাট। HH:MM (24H) ফরম্যাটে দিন।")
-        return ADMIN_SET_END_TIME
-
-async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("নতুন এডমিনের টেলিগ্রাম আইডি দিন:")
-    return ADMIN_ADD_ADMIN_ID
-
-async def add_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    if not uid.isdigit():
-        await update.message.reply_text("❌ আইডি শুধু নম্বর হতে হবে। আবার চেষ্টা করুন।")
-        return ADMIN_ADD_ADMIN_ID
-
-    user = get_user(uid)
-    if not user:
-        await update.message.reply_text("❌ ইউজার ডাটাবেজে নেই। ইউজারকে প্রথমে /start দিতে হবে।")
-        return ADMIN_ADD_ADMIN_ID
-
-    db.collection('users').document(uid).update({'is_admin': True})
-    await update.message.reply_text(f"✅ ইউজার {uid} এখন এডমিন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def rmv_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("এডমিন রোল রিমুভ করার ইউজার আইডি দিন:")
-    return ADMIN_RMV_ADMIN_ID
-
-async def rmv_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    if not uid.isdigit():
-        await update.message.reply_text("❌ আইডি শুধু নম্বর হতে হবে।")
-        return ADMIN_RMV_ADMIN_ID
-
-    if uid == str(OWNER_ID):
-        await update.message.reply_text("❌ ওনারকে রিমুভ করা যাবে না।")
-        return ADMIN_RMV_ADMIN_ID
-
-    user = get_user(uid)
-    if not user:
-        await update.message.reply_text("❌ ইউজার ডাটাবেজে নেই।")
-        return ADMIN_RMV_ADMIN_ID
-
-    db.collection('users').document(uid).update({'is_admin': False})
-    await update.message.reply_text(f"✅ ইউজার {uid} আর এডমিন নেই।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def set_log_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("লগ চ্যানেলের আইডি দিন (বটকে এডমিন করতে ভুলবেন না):")
-    return ADMIN_SET_LOG_CHANNEL
-
-async def set_log_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.text.strip()
-    update_config({'log_channel_id': chat_id})
-    await update.message.reply_text(f"✅ লগ চ্যানেল সেট হয়েছে: {chat_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-# রিপোর্ট ফাংশন
-async def report_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # CSV তৈরি করুন
-    tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Task ID', 'User ID', 'App ID', 'Review Name', 'Email', 'Amount', 'Approved At'])
-    
-    for task in tasks_ref:
-        data = task.to_dict()
-        writer.writerow([
-            task.id,
-            data.get('user_id', ''),
-            data.get('app_id', ''),
-            data.get('review_name', ''),
-            data.get('email', ''),
-            data.get('price', 0),
-            data.get('approved_at', '').strftime('%Y-%m-%d %H:%M:%S') if hasattr(data.get('approved_at', ''), 'strftime') else ''
-        ])
-    
-    output.seek(0)
-    
-    await query.edit_message_text("📊 সব এপ্রুভ টাস্কের রিপোর্ট তৈরি হচ্ছে...")
-    
-    # CSV ফাইল পাঠান
-    await context.bot.send_document(
-        chat_id=query.from_user.id,
-        document=io.BytesIO(output.getvalue().encode()),
-        filename=f"all_tasks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        caption="📊 সম্পূর্ণ রিপোর্ট (সব এপ্রুভ টাস্ক)"
-    )
-
-async def report_7d(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # গত ৭ দিনের টাস্ক
-    cutoff = datetime.now() - timedelta(days=7)
-    
-    tasks_ref = db.collection('tasks').where('approved_at', '>=', cutoff).where('status', '==', 'approved').stream()
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Task ID', 'User ID', 'App ID', 'Review Name', 'Email', 'Amount', 'Approved At'])
-    
-    for task in tasks_ref:
-        data = task.to_dict()
-        writer.writerow([
-            task.id,
-            data.get('user_id', ''),
-            data.get('app_id', ''),
-            data.get('review_name', ''),
-            data.get('email', ''),
-            data.get('price', 0),
-            data.get('approved_at', '').strftime('%Y-%m-%d %H:%M:%S') if hasattr(data.get('approved_at', ''), 'strftime') else ''
-        ])
-    
-    output.seek(0)
-    
-    await query.edit_message_text("📊 গত ৭ দিনের রিপোর্ট তৈরি হচ্ছে...")
-    
-    await context.bot.send_document(
-        chat_id=query.from_user.id,
-        document=io.BytesIO(output.getvalue().encode()),
-        filename=f"7days_tasks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        caption="📊 গত ৭ দিনের রিপোর্ট"
-    )
-
-async def report_24h(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # গত ২৪ ঘন্টার টাস্ক
-    cutoff = datetime.now() - timedelta(hours=24)
-    
-    tasks_ref = db.collection('tasks').where('approved_at', '>=', cutoff).where('status', '==', 'approved').stream()
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Task ID', 'User ID', 'App ID', 'Review Name', 'Email', 'Amount', 'Approved At'])
-    
-    for task in tasks_ref:
-        data = task.to_dict()
-        writer.writerow([
-            task.id,
-            data.get('user_id', ''),
-            data.get('app_id', ''),
-            data.get('review_name', ''),
-            data.get('email', ''),
-            data.get('price', 0),
-            data.get('approved_at', '').strftime('%Y-%m-%d %H:%M:%S') if hasattr(data.get('approved_at', ''), 'strftime') else ''
-        ])
-    
-    output.seek(0)
-    
-    await query.edit_message_text("📊 গত ২৪ ঘন্টার রিপোর্ট তৈরি হচ্ছে...")
-    
-    await context.bot.send_document(
-        chat_id=query.from_user.id,
-        document=io.BytesIO(output.getvalue().encode()),
-        filename=f"24h_tasks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        caption="📊 গত ২৪ ঘন্টার রিপোর্ট"
-    )
-
-# ==========================================
-# 9. মেইন রানার
+# 10. মেইন এক্সিকিউশন
 # ==========================================
 
 def main():
-    # Start Flask server in separate thread
-    threading.Thread(target=run_flask, daemon=True).start()
+    # 1. Start Flask in separate thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
     
-    # Start automation in separate thread
-    threading.Thread(target=run_automation, daemon=True).start()
+    # 2. Start Automation in separate thread
+    auto_thread = threading.Thread(target=run_background_checks, daemon=True)
+    auto_thread.start()
 
-    # Create the Telegram bot application
+    # 3. Setup Bot
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Add command handlers
+    # Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("password", password_command))
-    application.add_handler(CommandHandler("newpass", new_password_command))
-    application.add_handler(CommandHandler("webpass", password_command))
-
-    # Admin panel
-    application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log|adm_reports|adm_auto|daily_summary|run_manual_check)$"))
-
-    # Button edit
-    application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
-    application.add_handler(CallbackQueryHandler(button_action_handler, pattern="^(btntog_|btnren_)"))
-
-    # Action handlers
-    application.add_handler(CallbackQueryHandler(handle_withdrawal_action, pattern="^wd_(apr|rej)_"))
-    application.add_handler(CallbackQueryHandler(handle_task_action, pattern="^t_(apr|rej)_"))
-
-    # Task submission conversation
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_task_submission, pattern="^submit_task$")],
+    
+    # Task Conversation
+    task_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(task_start, pattern="^submit_task$")],
         states={
-            T_APP_SELECT: [CallbackQueryHandler(app_selected, pattern="^sel_")],
-            T_REVIEW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_review_name)],
-            T_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
-            T_DEVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_device)],
-            T_SS: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, save_task)]
+            T_APP_SELECT: [CallbackQueryHandler(task_app_select, pattern="^sel_")],
+            T_REVIEW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_get_name)],
+            T_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_get_email)],
+            T_DEVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_get_device)],
+            T_SS: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, task_submit_final)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$|back_home")]
+    )
+    application.add_handler(task_conv)
 
-    # Withdrawal conversation
-    application.add_handler(ConversationHandler(
+    # Withdraw Conversation
+    wd_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(withdraw_start, pattern="^start_withdraw$")],
         states={
-            WD_METHOD: [CallbackQueryHandler(withdraw_method, pattern="^m_(bkash|nagad)$|^cancel$")],
+            WD_METHOD: [CallbackQueryHandler(withdraw_method, pattern="^wdm_")],
             WD_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_number)],
-            WD_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)]
+            WD_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_final)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$|back_home")]
+    )
+    application.add_handler(wd_conv)
 
-    # App management conversations
-    application.add_handler(ConversationHandler(
+    # App Management Conversation
+    app_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_app_start, pattern="^add_app$")],
         states={
-            ADD_APP_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_id)],
-            ADD_APP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_name)],
-            ADD_APP_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_limit)]
+            ADD_APP_ID: [MessageHandler(filters.TEXT, add_app_id_in)],
+            ADD_APP_NAME: [MessageHandler(filters.TEXT, add_app_name_in)],
+            ADD_APP_LIMIT: [MessageHandler(filters.TEXT, add_app_save)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(edit_app_limit_start, pattern="^edit_app_limit_start$")],
-        states={
-            EDIT_APP_SELECT: [CallbackQueryHandler(edit_app_limit_select, pattern="^edlim_")],
-            EDIT_APP_LIMIT_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_app_limit_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    application.add_handler(ConversationHandler(
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$|back_home")]
+    )
+    application.add_handler(app_conv)
+    
+    # Remove App Conversation
+    rm_app_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(rmv_app_start, pattern="^rmv_app$")],
         states={
-            REMOVE_APP_SELECT: [CallbackQueryHandler(rmv_app_sel, pattern="^rm_")]
+            REMOVE_APP_SELECT: [CallbackQueryHandler(rmv_app_confirm, pattern="^rma_")]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$|back_home")]
+    )
+    application.add_handler(rm_app_conv)
 
-    # User management
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(find_user_start, pattern="^find_user$")],
-        states={
-            ADMIN_USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_user_result)],
-            ADMIN_USER_ACTION: [CallbackQueryHandler(user_action_handler, pattern="^(u_add_bal|u_cut_bal|u_toggle_block|u_toggle_admin)$|^cancel$")],
-            ADMIN_USER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_balance_update)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
+    # General Callbacks
+    application.add_handler(CallbackQueryHandler(admin_panel_handler, pattern="^admin_panel$"))
+    application.add_handler(CallbackQueryHandler(adm_apps_menu, pattern="^adm_apps$"))
+    application.add_handler(CallbackQueryHandler(handle_action, pattern="^(t_|wd_)"))
+    application.add_handler(CallbackQueryHandler(common_callback))
 
-    # Text and button edit
-    application.add_handler(ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_rules|ed_txt_schedule|ed_txt_referral_bonus|ed_txt_task_price|ed_txt_min_withdraw|set_auto_time|set_check_interval|set_time_start|set_time_end)$"),
-            CallbackQueryHandler(button_action_handler, pattern="^btnren_")
-        ],
-        states={
-            ADMIN_EDIT_TEXT_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text_save)],
-            ADMIN_EDIT_BTN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, button_rename_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    # Custom buttons
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_custom_btn_start, pattern="^add_cus_btn$")],
-        states={
-            ADMIN_ADD_BTN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_link)],
-            ADMIN_ADD_BTN_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(rmv_custom_btn_start, pattern="^rmv_cus_btn$")],
-        states={
-            REMOVE_CUS_BTN: [CallbackQueryHandler(rmv_custom_btn_handle, pattern="^rm_cus_btn_")]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    # Time settings
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(set_time_start_handler, pattern="^set_time_start$")],
-        states={
-            ADMIN_SET_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_start_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(set_time_end_handler, pattern="^set_time_end$")],
-        states={
-            ADMIN_SET_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_end_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    # Admin management
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_admin_start, pattern="^add_new_admin$")],
-        states={
-            ADMIN_ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(rmv_admin_start, pattern="^rmv_admin_role$")],
-        states={
-            ADMIN_RMV_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, rmv_admin_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    # Log channel
-    application.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(set_log_start, pattern="^set_log_id$")],
-        states={
-            ADMIN_SET_LOG_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_log_save)]
-        },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
-    ))
-
-    # Common callbacks
-    application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule|show_password|reset_password)$"))
-
-    # Auto time and interval settings handlers
-    application.add_handler(CallbackQueryHandler(set_auto_time_start, pattern="^set_auto_time$"))
-    application.add_handler(CallbackQueryHandler(set_check_interval_start, pattern="^set_check_interval$"))
-
-    # Report handlers
-    application.add_handler(CallbackQueryHandler(report_all, pattern="^rep_all$"))
-    application.add_handler(CallbackQueryHandler(report_7d, pattern="^rep_7d$"))
-    application.add_handler(CallbackQueryHandler(report_24h, pattern="^rep_24h$"))
-
-    print("🚀 Bot Started with all updates...")
-    print(f"🌐 Web API Token: {WEB_API_TOKEN}")
-    print(f"🔗 Web API Endpoint: /api/web_submit")
-    print(f"🤖 Auto System: Enabled (Daily at 20:30)")
-    
-    # Run the bot
-    application.run_polling(drop_pending_updates=True)
+    print("🚀 Bot Started Successfully on Render/VPS!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
+    # Fix for Asyncio Loop issues on some platforms
+    import nest_asyncio
+    nest_asyncio.apply()
     main()
