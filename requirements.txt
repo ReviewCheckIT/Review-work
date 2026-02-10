@@ -8,4 +8,3 @@ gunicorn==22.0.0
 schedule
 pytz
 nest_asyncio
-google-generativeai
