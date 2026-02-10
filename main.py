@@ -1186,7 +1186,156 @@ def run_automation():
 # ==========================================
 # 6. ওয়েবসাইট API ইন্টিগ্রেশন
 # ==========================================
+# ==========================================
+# TIME SETTING HANDLERS - যোগ করতে হবে
+# ==========================================
 
+async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("⏰ Enter START Time (24 Hour Format, e.g., 15:30 or 23:00):")
+    return ADMIN_SET_START_TIME
+
+async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t_str = update.message.text.strip()
+    try:
+        datetime.strptime(t_str, "%H:%M")
+        update_config({"work_start_time": t_str})
+        await update.message.reply_text(f"✅ Start Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 15:30).")
+    return ConversationHandler.END
+
+async def set_time_end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("⏰ Enter END Time (24 Hour Format, e.g., 23:00 or 15:30):")
+    return ADMIN_SET_END_TIME
+
+async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t_str = update.message.text.strip()
+    try:
+        datetime.strptime(t_str, "%H:%M")
+        update_config({"work_end_time": t_str})
+        await update.message.reply_text(f"✅ End Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    except ValueError:
+        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 23:00).")
+    return ConversationHandler.END
+
+async def set_log_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("📢 Enter Group/Channel ID (e.g. -100123456789):")
+    return ADMIN_SET_LOG_CHANNEL
+
+async def set_log_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = update.message.text.strip()
+    update_config({"log_channel_id": cid})
+    await update.message.reply_text(f"✅ Log Channel Set to `{cid}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    return ConversationHandler.END
+
+async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("🆔 Enter the Telegram User ID to make Admin:")
+    return ADMIN_ADD_ADMIN_ID
+
+async def add_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.text.strip()
+    if not uid.isdigit():
+        await update.message.reply_text("❌ ID must be numeric.")
+        return ConversationHandler.END
+
+    db.collection('users').document(uid).set({"is_admin": True}, merge=True)
+    await update.message.reply_text(f"✅ User `{uid}` is now an Admin!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    return ConversationHandler.END
+
+async def rmv_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("🆔 Enter the Telegram User ID to Remove from Admin:")
+    return ADMIN_RMV_ADMIN_ID
+
+async def rmv_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.text.strip()
+    if uid == str(OWNER_ID):
+        await update.message.reply_text("❌ Cannot remove Owner.")
+        return ConversationHandler.END
+
+    user_ref = db.collection('users').document(uid)
+    if user_ref.get().exists:
+        user_ref.update({"is_admin": False})
+        await update.message.reply_text(f"✅ User `{uid}` removed from Admin.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    else:
+        db.collection('users').document(uid).set({"is_admin": False, "id": uid, "name": "Unknown"}, merge=True)
+        await update.message.reply_text(f"✅ User `{uid}` removed from Admin.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+
+    return ConversationHandler.END
+
+async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Generating report... Please wait.")
+
+    data_code = query.data
+    now = datetime.now()
+    cutoff_date = None
+    file_prefix = "Report"
+
+    if data_code == "rep_7d":
+        cutoff_date = now - timedelta(days=7)
+        file_prefix = "All_Apps_7Days"
+    elif data_code == "rep_24h":
+        cutoff_date = now - timedelta(hours=24)
+        file_prefix = "All_Apps_24Hours"
+    elif data_code == "rep_all":
+        file_prefix = "All_Apps_AllTime"
+
+    tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
+    data_rows = []
+
+    for t in tasks_ref:
+        t_data = t.to_dict()
+        approved_at = t_data.get('approved_at')
+
+        if approved_at:
+            if cutoff_date:
+                if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
+                    continue
+            date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            date_str = "N/A"
+            if cutoff_date: continue
+
+        data_rows.append([
+            t.id,
+            t_data.get('user_id', ''),
+            t_data.get('app_id', ''),
+            t_data.get('review_name', ''),
+            t_data.get('email', ''),
+            t_data.get('device', ''),
+            t_data.get('screenshot', ''),
+            t_data.get('price', 0),
+            date_str
+        ])
+
+    if not data_rows:
+        await query.message.reply_text("❌ No data found for this selection.")
+        return
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date"])
+    writer.writerows(data_rows)
+
+    output.seek(0)
+    byte_output = io.BytesIO(output.getvalue().encode('utf-8'))
+
+    filename = f"{file_prefix}_{now.strftime('%Y%m%d')}.csv"
+
+    caption_msg = (
+        f"📊 **Export Generated**\n"
+        f"📂 File: `{filename}`\n"
+        f"✅ Total Rows: {len(data_rows)}\n"
+        f"📅 Date: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    await context.bot.send_document(
+        chat_id=query.from_user.id,
+        document=byte_output,
+        filename=filename,
+        caption=caption_msg,
+        parse_mode="Markdown"
+    )
 app = Flask(__name__)
 
 @app.route('/')
