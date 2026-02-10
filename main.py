@@ -310,26 +310,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = []
+    
+    # Row 1: Submit Task and Profile
     row1 = []
-    if btns_conf['submit']['show']: row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
-    if btns_conf['profile']['show']: row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
-    if row1: keyboard.append(row1)
+    if btns_conf['submit']['show']: 
+        row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
+    if btns_conf['profile']['show']: 
+        row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
+    if row1: 
+        keyboard.append(row1)
 
+    # Row 2: Withdraw and Refer
     row2 = []
-    if btns_conf['withdraw']['show']: row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
-    if btns_conf['refer']['show']: row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
-    if row2: keyboard.append(row2)
+    if btns_conf['withdraw']['show']: 
+        row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
+    if btns_conf['refer']['show']: 
+        row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
+    if row2: 
+        keyboard.append(row2)
 
+    # Row 3: Schedule and Refresh
     row3 = []
-    if btns_conf.get('schedule', {}).get('show', True): row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
+    if btns_conf.get('schedule', {}).get('show', True): 
+        row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
     row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
-    if row3: keyboard.append(row3)
+    if row3: 
+        keyboard.append(row3)
 
+    # Custom buttons (must have URL)
     custom_btns = config.get('custom_buttons', [])
     for btn in custom_btns:
-        if btn.get('text') and btn.get('url'):
+        if btn.get('text') and btn.get('url') and btn.get('url').startswith(('http://', 'https://')):
             keyboard.append([InlineKeyboardButton(btn['text'], url=btn['url'])])
 
+    # Admin panel button
     if is_admin(user.id):
         keyboard.append([InlineKeyboardButton("⚙️ এডমিন প্যানেল", callback_data="admin_panel")])
 
@@ -341,6 +355,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Start Error: {e}")
+                # Try sending a new message instead
+                await update.callback_query.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
     else:
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -366,13 +382,16 @@ async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔄 নতুন পাসওয়ার্ড চাইলে: /newpass"
     )
     
+    # Create keyboard with proper buttons
+    keyboard = []
+    if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
+        keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
+    keyboard.append([InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")])
+    
     await update.message.reply_text(
         password_msg,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
-            [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")]
-        ])
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def new_password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -395,12 +414,15 @@ async def new_password_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!"
     )
     
+    # Create keyboard with proper buttons
+    keyboard = []
+    if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
+        keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
+    
     await update.message.reply_text(
         password_msg,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)]
-        ])
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -410,6 +432,7 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if query.data == "back_home":
             await start(update, context)
+            return
 
         elif query.data == "my_profile":
             user = get_user(query.from_user.id)
@@ -428,16 +451,22 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
             
+            # Create keyboard with proper buttons
+            keyboard = [
+                [InlineKeyboardButton("🔑 পাসওয়ার্ড দেখুন", callback_data="show_password")],
+                [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
+                [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
+            ]
+            
+            if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
+                keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
+            
+            keyboard.append([InlineKeyboardButton("🔙 হোম", callback_data="back_home")])
+            
             await query.edit_message_text(
                 msg, 
                 parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔑 পাসওয়ার্ড দেখুন", callback_data="show_password")],
-                    [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
-                    [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
-                    [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
-                    [InlineKeyboardButton("🔙", callback_data="back_home")]
-                ])
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
 
         elif query.data == "refer_friend":
@@ -480,7 +509,7 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 msg, 
                 parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
             )
         
         elif query.data == "show_password":
@@ -503,6 +532,12 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_password = str(random.randint(100000, 999999))
             db.collection('users').document(str(user_id)).update({'web_password': new_password})
             
+            # Create keyboard with proper buttons
+            keyboard = []
+            if WEB_URL and WEB_URL.startswith(('http://', 'https://')):
+                keyboard.append([InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)])
+            keyboard.append([InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")])
+            
             await query.edit_message_text(
                 f"✅ **নতুন পাসওয়ার্ড জেনারেট করা হয়েছে!**\n\n"
                 f"🔐 **নতুন পাসওয়ার্ড:** `{new_password}`\n\n"
@@ -511,15 +546,19 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔑 পাসওয়ার্ড: `{new_password}`\n\n"
                 f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!",
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
-                    [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
-                ])
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             
     except BadRequest as e:
-        if "Message is not modified" in str(e): pass
-        else: logger.error(f"Callback Error: {e}")
+        if "Message is not modified" in str(e): 
+            pass
+        else: 
+            logger.error(f"Callback Error: {e}")
+            # Try to send a new message if edit fails
+            try:
+                await query.message.reply_text("❌ সমস্যা হয়েছে। আবার চেষ্টা করুন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]]))
+            except:
+                pass
 
 # --- Withdrawal System ---
 
@@ -533,7 +572,7 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user['balance'] < config['min_withdraw']:
         await query.edit_message_text(
             f"❌ উইথড্র বাতিল। সর্বনিম্ন উইথড্র অ্যামাউন্ট: ৳{config['min_withdraw']:.2f}", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
         )
         return ConversationHandler.END
 
@@ -549,7 +588,9 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def withdraw_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel": 
+        await cancel_conv(update, context)
+        return ConversationHandler.END
 
     context.user_data['wd_method'] = "Bkash" if "bkash" in query.data else "Nagad"
     await query.edit_message_text(f"আপনার {context.user_data['wd_method']} নাম্বারটি দিন:")
@@ -697,7 +738,7 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
     if not apps:
         await query.edit_message_text(
             "❌ বর্তমানে কোনো কাজ নেই।", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
         )
         return ConversationHandler.END
 
@@ -724,7 +765,9 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
 async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel": 
+        await cancel_conv(update, context)
+        return ConversationHandler.END
 
     app_id = query.data.split("sel_")[1]
     config = get_config()
@@ -733,7 +776,7 @@ async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not app:
         await query.edit_message_text(
             "❌ অ্যাপটি খুঁজে পাওয়া যায়নি।", 
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
         )
         return ConversationHandler.END
 
@@ -923,7 +966,7 @@ async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_message(chat_id=user_id, text="❌ আপনার কাজটি রিজেক্ট করা হয়েছে। সঠিক তথ্য দিয়ে আবার চেষ্টা করুন।")
 
 # ==========================================
-# 5. অটোমেশন ও গ্রুপ নোটিফিকেশন - আপডেট করা হয়েছে
+# 5. অটোমেশন ও গ্রুপ নোটিফিকেশন
 # ==========================================
 
 def approve_task(task_id, user_id, amount):
@@ -1389,13 +1432,13 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT, debug=False)
 
 # ==========================================
-# 7. এডমিন প্যানেল - নতুন অপশন যোগ করা হয়েছে
+# 7. এডমিন প্যানেল
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_admin(query.from_user.id): 
-        await query.answer("⚠️ Only Admins can access this!", show_alert=True)
+        await query.answer("⚠️ শুধুমাত্র এডমিনরা এক্সেস করতে পারবেন!", show_alert=True)
         return
 
     kb = [
@@ -1615,7 +1658,6 @@ async def set_check_interval_start(update: Update, context: ContextTypes.DEFAULT
     context.user_data['edit_key'] = 'check_interval_hours'
     return ADMIN_EDIT_TEXT_VAL
 
-# Add these new patterns to the existing edit_text_start function
 async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     key_map = {
@@ -1708,12 +1750,17 @@ async def add_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def add_custom_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['c_btn_name'] = update.message.text
-    await update.message.reply_text("Enter Button Link (URL):")
+    await update.message.reply_text("Enter Button Link (URL with http:// or https://):")
     return ADMIN_ADD_BTN_LINK
 
 async def add_custom_btn_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = update.message.text
+    link = update.message.text.strip()
     name = context.user_data['c_btn_name']
+
+    # Validate URL
+    if not link.startswith(('http://', 'https://')):
+        await update.message.reply_text("❌ URL must start with http:// or https://. Please enter a valid URL:")
+        return ADMIN_ADD_BTN_LINK
 
     config = get_config()
     c_btns = config.get('custom_buttons', [])
@@ -1744,7 +1791,9 @@ async def rmv_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def rmv_custom_btn_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel": 
+        await cancel_conv(update, context)
+        return ConversationHandler.END
 
     try:
         idx = int(query.data.split("rm_cus_btn_")[1])
@@ -1815,7 +1864,9 @@ async def rmv_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel": 
+        await cancel_conv(update, context)
+        return ConversationHandler.END
 
     try:
         idx = int(query.data.split("rm_")[1])
@@ -1848,7 +1899,9 @@ async def edit_app_limit_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def edit_app_limit_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel": 
+        await cancel_conv(update, context)
+        return ConversationHandler.END
 
     idx = int(query.data.split("edlim_")[1])
     context.user_data['ed_app_idx'] = idx
@@ -1914,7 +1967,9 @@ async def user_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
     uid = context.user_data['mng_uid']
 
-    if data == "cancel": return await cancel_conv(update, context)
+    if data == "cancel": 
+        await cancel_conv(update, context)
+        return ConversationHandler.END
 
     if data == "u_toggle_block":
         user = get_user(uid)
