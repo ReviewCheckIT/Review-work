@@ -426,7 +426,7 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.data == "back_home":
             await start(update, context)
 
-        elif query.data == "my_profile":
+ elif query.data == "my_profile":
     user = get_user(query.from_user.id)
     if user:
         referral_count = get_referral_count(query.from_user.id)
