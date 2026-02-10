@@ -21,7 +21,8 @@ from telegram.ext import (
     MessageHandler, filters, ConversationHandler
 )
 from google_play_scraper import Sort, reviews as play_reviews
-from flask import Flask
+from flask import Flask, request, jsonify
+import schedule
 
 # --- AI Import Safeguard ---
 try:
@@ -50,6 +51,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', "")
 IMGBB_API_KEY = os.environ.get('IMGBB_API_KEY', "")
 PORT = int(os.environ.get("PORT", 8080))
 WEB_URL = os.environ.get("WEB_URL", "")
+WEB_API_TOKEN = os.environ.get("WEB_API_TOKEN", "secret_token_12345")
 
 # Gemini AI সেটআপ
 model = None
@@ -96,7 +98,9 @@ DEFAULT_CONFIG = {
         "refer": {"text": "📢 রেফার", "show": True},
         "schedule": {"text": "📅 সময়সূচী", "show": True}
     },
-    "custom_buttons": [] 
+    "custom_buttons": [],
+    "auto_approve_time": "20:30",
+    "check_interval_hours": 24
 }
 
 # Conversation States - সঠিক সংখ্যা: 29
@@ -177,6 +181,18 @@ def get_user(user_id):
     except: pass
     return None
 
+def get_referral_count(user_id):
+    """Count how many users referred by this user"""
+    try:
+        referrals_ref = db.collection('users').where('referrer', '==', str(user_id)).stream()
+        count = 0
+        for doc in referrals_ref:
+            count += 1
+        return count
+    except Exception as e:
+        logger.error(f"Referral count error: {e}")
+        return 0
+
 def create_user(user_id, first_name, referrer_id=None):
     user_ref = db.collection('users').document(str(user_id))
     user_doc = user_ref.get()
@@ -194,10 +210,22 @@ def create_user(user_id, first_name, referrer_id=None):
                 "referrer": referrer_id if referrer_id and referrer_id.isdigit() and str(referrer_id) != str(user_id) else None,
                 "is_blocked": False,
                 "is_admin": str(user_id) == str(OWNER_ID),
-                "web_password": web_password
+                "web_password": web_password,
+                "referral_count": 0
             }
             user_ref.set(user_data)
             logger.info(f"New user created: {user_id} with password: {web_password}")
+            
+            # Update referrer's referral count if exists
+            if referrer_id and referrer_id.isdigit():
+                try:
+                    referrer_ref = db.collection('users').document(str(referrer_id))
+                    referrer_ref.update({
+                        "referral_count": firestore.Increment(1)
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to update referrer count: {e}")
+            
             return web_password
         except Exception as e:
             logger.error(f"Create user error: {e}")
@@ -254,7 +282,7 @@ def send_telegram_message(message, chat_id=None, reply_markup=None):
         logger.error(f"Telegram Send Error: {e}")
 
 # ==========================================
-# 4. ইউজার সাইড ফাংশন
+# 4. ইউজার সাইড ফাংশন - প্রোফাইল ফিক্স করা হয়েছে
 # ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -386,11 +414,14 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "my_profile":
             user = get_user(query.from_user.id)
             if user:
+                referral_count = get_referral_count(query.from_user.id)
                 msg = (
                     f"👤 **প্রোফাইল**\n\n"
                     f"🆔 ID: `{user['id']}`\n"
+                    f"👤 নাম: {user.get('name', 'N/A')}\n"
                     f"💰 ব্যালেন্স: ৳{user['balance']:.2f}\n"
                     f"✅ সম্পন্ন টাস্ক: {user['total_tasks']}\n"
+                    f"👥 রেফার করেছে: {referral_count} জন\n"
                     f"🔑 ওয়েব পাসওয়ার্ড: `{user.get('web_password', 'সেট করা নেই')}`\n\n"
                     f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
                 )
@@ -403,6 +434,7 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔑 পাসওয়ার্ড দেখুন", callback_data="show_password")],
                     [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
+                    [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
                     [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
                     [InlineKeyboardButton("🔙", callback_data="back_home")]
                 ])
@@ -410,19 +442,30 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif query.data == "refer_friend":
             config = get_config()
+            user = get_user(query.from_user.id)
+            referral_count = get_referral_count(query.from_user.id)
+            
             link = f"https://t.me/{context.bot.username}?start={query.from_user.id}"
             await query.edit_message_text(
-                f"📢 **রেফার লিংক:**\n`{link}`\n\n"
-                f"প্রতি রেফারে বোনাস: ৳{config['referral_bonus']}\n\n"
+                f"📢 **রেফার সিস্টেম**\n\n"
+                f"🔗 **আপনার রেফার লিংক:**\n`{link}`\n\n"
+                f"👥 **আপনি মোট রেফার করেছেন:** {referral_count} জন\n"
+                f"💰 **প্রতি রেফারে বোনাস:** ৳{config['referral_bonus']:.2f}\n"
+                f"💵 **আপনার রেফার বোনাস:** ৳{referral_count * config['referral_bonus']:.2f}\n\n"
                 f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}",
                 parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 লিংক শেয়ার করুন", url=f"https://t.me/share/url?url={link}&text=Join%20this%20earning%20bot")],
+                    [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")],
+                    [InlineKeyboardButton("🏠 হোম", callback_data="back_home")]
+                ])
             )
 
         elif query.data == "show_schedule":
             config = get_config()
             s_time = datetime.strptime(config.get('work_start_time', '15:30'), "%H:%M").strftime("%I:%M %p")
             e_time = datetime.strptime(config.get('work_end_time', '23:00'), "%H:%M").strftime("%I:%M %p")
+            auto_time = config.get('auto_approve_time', '20:30')
 
             msg = (
                 f"📅 **সময়সূচী:**\n\n"
@@ -430,6 +473,8 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🕒 **কাজ জমা দেওয়ার সময়:**\n"
                 f"শুরু: `{s_time}`\n"
                 f"শেষ: `{e_time}`\n\n"
+                f"✅ **স্বয়ংক্রিয় এপ্রুভ সময়:** `{auto_time}`\n"
+                f"⏳ **চেকিং সময়:** প্রতি ২৪ ঘন্টা\n\n"
                 f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
             )
             await query.edit_message_text(
@@ -782,7 +827,9 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "screenshot": screenshot_link,
         "status": "pending",
         "submitted_at": datetime.now(),
-        "price": config['task_price']
+        "price": config['task_price'],
+        "last_checked": datetime.now(),
+        "check_count": 0
     })
 
     task_id = task_ref[1].id
@@ -795,7 +842,8 @@ async def save_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📧 Email: {data['email']}\n"
         f"📱 Device: {data['dev']}\n"
         f"🖼 Proof: [View Screenshot]({screenshot_link})\n"
-        f"💰 Price: ৳{config['task_price']:.2f}"
+        f"💰 Price: ৳{config['task_price']:.2f}\n"
+        f"⏰ Time: {datetime.now().strftime('%I:%M %p')}"
     )
 
     kb = InlineKeyboardMarkup([
@@ -875,14 +923,18 @@ async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_message(chat_id=user_id, text="❌ আপনার কাজটি রিজেক্ট করা হয়েছে। সঠিক তথ্য দিয়ে আবার চেষ্টা করুন।")
 
 # ==========================================
-# 5. অটোমেশন ও গ্রুপ নোটিফিকেশন
+# 5. অটোমেশন ও গ্রুপ নোটিফিকেশন - আপডেট করা হয়েছে
 # ==========================================
 
 def approve_task(task_id, user_id, amount):
     task_ref = db.collection('tasks').document(task_id)
     t_data = task_ref.get().to_dict()
     if t_data and t_data['status'] == 'pending':
-        task_ref.update({"status": "approved", "approved_at": datetime.now()})
+        task_ref.update({
+            "status": "approved", 
+            "approved_at": datetime.now(),
+            "auto_approved": True
+        })
         db.collection('users').document(str(user_id)).update({
             "balance": firestore.Increment(amount),
             "total_tasks": firestore.Increment(1)
@@ -908,23 +960,172 @@ def approve_task(task_id, user_id, amount):
         return True
     return False
 
+def reject_task(task_id, reason="Review name not matched within 24 hours"):
+    task_ref = db.collection('tasks').document(task_id)
+    t_data = task_ref.get().to_dict()
+    if t_data and t_data['status'] == 'pending':
+        task_ref.update({
+            "status": "rejected", 
+            "rejected_at": datetime.now(),
+            "reject_reason": reason,
+            "auto_rejected": True
+        })
+        return True
+    return False
+
+def check_playstore_review(app_id, review_name):
+    """Check if review exists in Play Store"""
+    try:
+        reviews, _ = play_reviews(app_id, count=50, sort=Sort.NEWEST)
+        for review in reviews:
+            if review['userName'].lower().strip() == review_name.lower().strip():
+                return review['score'], review['content'], review['at']
+        return None, None, None
+    except Exception as e:
+        logger.error(f"Play Store check error: {e}")
+        return None, None, None
+
+def check_24_hour_reviews():
+    """Check and approve/reject tasks based on 24-hour rule"""
+    logger.info("Running 24-hour review check...")
+    config = get_config()
+    log_id = config.get('log_channel_id', OWNER_ID)
+    
+    try:
+        # Get all pending tasks older than 24 hours
+        cutoff_time = datetime.now() - timedelta(hours=24)
+        pending_tasks = db.collection('tasks').where('status', '==', 'pending').stream()
+        
+        approved_count = 0
+        rejected_count = 0
+        
+        for task_doc in pending_tasks:
+            task_data = task_doc.to_dict()
+            task_time = task_data.get('submitted_at')
+            
+            if task_time and task_time.replace(tzinfo=None) < cutoff_time:
+                # Check if review name matches in Play Store
+                rating, content, review_time = check_playstore_review(
+                    task_data['app_id'], 
+                    task_data['review_name']
+                )
+                
+                if rating == 5:  # 5-star review found
+                    # Approve the task
+                    if approve_task(task_doc.id, task_data['user_id'], task_data.get('price', 0)):
+                        approved_count += 1
+                        send_telegram_message(
+                            f"✅ **24-Hour Auto Approved**\n"
+                            f"User: `{task_data['user_id']}`\n"
+                            f"Task: {task_doc.id}\n"
+                            f"Review: {task_data['review_name']}\n"
+                            f"Rating: ⭐⭐⭐⭐⭐",
+                            chat_id=log_id
+                        )
+                        send_telegram_message(
+                            f"🎉 আপনার কাজটি ২৪ ঘন্টা পর চেক করে এপ্রুভ করা হয়েছে! ৳{task_data.get('price', 0):.2f} যোগ হয়েছে।",
+                            chat_id=task_data['user_id']
+                        )
+                else:
+                    # Reject the task
+                    if reject_task(task_doc.id, "Review name not found or not 5-star within 24 hours"):
+                        rejected_count += 1
+                        send_telegram_message(
+                            f"❌ **24-Hour Auto Rejected**\n"
+                            f"User: `{task_data['user_id']}`\n"
+                            f"Task: {task_doc.id}\n"
+                            f"Reason: Review name not matched or not 5-star",
+                            chat_id=log_id
+                        )
+                        send_telegram_message(
+                            f"❌ আপনার কাজটি ২৪ ঘন্টা পর চেক করে রিজেক্ট করা হয়েছে। কারণ: রিভিউ নাম মিলেনি বা ৫-স্টার রিভিউ দেওয়া হয়নি।",
+                            chat_id=task_data['user_id']
+                        )
+        
+        if approved_count > 0 or rejected_count > 0:
+            send_telegram_message(
+                f"📊 **24-Hour Check Complete**\n"
+                f"✅ Approved: {approved_count}\n"
+                f"❌ Rejected: {rejected_count}\n"
+                f"⏰ Time: {datetime.now().strftime('%I:%M %p')}",
+                chat_id=log_id
+            )
+            
+    except Exception as e:
+        logger.error(f"24-hour check error: {e}")
+
+def daily_auto_approve():
+    """Daily auto approve at configured time"""
+    logger.info("Running daily auto approve...")
+    config = get_config()
+    log_id = config.get('log_channel_id', OWNER_ID)
+    auto_time = config.get('auto_approve_time', '20:30')
+    
+    try:
+        # Get all pending tasks
+        pending_tasks = db.collection('tasks').where('status', '==', 'pending').stream()
+        approved_count = 0
+        
+        for task_doc in pending_tasks:
+            task_data = task_doc.to_dict()
+            
+            # Check if review exists in Play Store
+            rating, content, review_time = check_playstore_review(
+                task_data['app_id'], 
+                task_data['review_name']
+            )
+            
+            if rating == 5:  # 5-star review found
+                # Approve the task
+                if approve_task(task_doc.id, task_data['user_id'], task_data.get('price', 0)):
+                    approved_count += 1
+        
+        if approved_count > 0:
+            send_telegram_message(
+                f"✅ **Daily Auto Approve Complete**\n"
+                f"📅 Date: {datetime.now().strftime('%d/%m/%Y')}\n"
+                f"🕒 Time: {auto_time}\n"
+                f"✅ Approved Tasks: {approved_count}\n"
+                f"🎉 All matching reviews have been approved!",
+                chat_id=log_id
+            )
+            
+    except Exception as e:
+        logger.error(f"Daily auto approve error: {e}")
+
 def run_automation():
-    logger.info("Automation Started...")
+    """Main automation loop with scheduled tasks"""
+    logger.info("Automation Started with scheduled tasks...")
+    
+    # Schedule daily auto approve at 20:30
+    schedule.every().day.at("20:30").do(daily_auto_approve)
+    
+    # Schedule 24-hour check every 6 hours
+    schedule.every(6).hours.do(check_24_hour_reviews)
+    
+    # Regular Play Store monitoring (every 15 minutes)
     while True:
         try:
+            # Run scheduled tasks
+            schedule.run_pending()
+            
+            # Regular Play Store monitoring
             config = get_config()
             apps = config.get('monitored_apps', [])
             log_id = config.get('log_channel_id', OWNER_ID)
 
             for app in apps:
                 try:
-                    reviews, _ = play_reviews(app['id'], count=10, sort=Sort.NEWEST)
+                    reviews, _ = play_reviews(app['id'], count=20, sort=Sort.NEWEST)
                     for r in reviews:
                         rid = r['reviewId']
                         r_date = r['at']
+                        
+                        # Check if review is within last 48 hours
                         if r_date < datetime.now() - timedelta(hours=48):
                             continue
 
+                        # Store review for future reference
                         if not db.collection('seen_reviews').document(rid).get().exists:
                             date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
                             ai_txt = get_ai_summary(r['content'], r['score'])
@@ -935,36 +1136,260 @@ def run_automation():
                                 f"👤 Name: **{r['userName']}**\n"
                                 f"📅 Date: `{date_str}`\n"
                                 f"⭐ Rating: {r['score']}/5\n"
-                                f"💬 Comment: {r['content']}\n"
+                                f"💬 Comment: {r['content'][:100]}...\n"
                                 f"🤖 AI Mood: {ai_txt}"
                             )
                             send_telegram_message(msg, chat_id=log_id)
-                            db.collection('seen_reviews').document(rid).set({"t": datetime.now()})
+                            db.collection('seen_reviews').document(rid).set({
+                                "app_id": app['id'],
+                                "user_name": r['userName'],
+                                "rating": r['score'],
+                                "content": r['content'],
+                                "review_date": r_date,
+                                "scraped_at": datetime.now()
+                            })
 
+                            # Auto approve if 5-star and name matches pending task
                             if r['score'] == 5:
-                                p_tasks = db.collection('tasks').where('app_id', '==', app['id']).where('status', '==', 'pending').stream()
+                                p_tasks = db.collection('tasks')\
+                                    .where('app_id', '==', app['id'])\
+                                    .where('status', '==', 'pending')\
+                                    .where('review_name', '==', r['userName'])\
+                                    .stream()
+                                
                                 for t in p_tasks:
                                     td = t.to_dict()
-                                    if td['review_name'].lower().strip() == r['userName'].lower().strip():
-                                        price = td.get('price', 0)
-                                        if approve_task(t.id, td['user_id'], price):
-                                            send_telegram_message(
-                                                f"🤖 **Auto Approved!**\nUser: `{td['user_id']}`\nApp: {app['name']}\nName: {td['review_name']}", 
-                                                chat_id=log_id
-                                            )
-                                            send_telegram_message(
-                                                f"🎉 আপনার কাজটি **অটোমেটিক এপ্রুভ** হয়েছে! ৳{price:.2f} যোগ হয়েছে।", 
-                                                chat_id=td['user_id']
-                                            )
-                                        break
+                                    price = td.get('price', 0)
+                                    if approve_task(t.id, td['user_id'], price):
+                                        send_telegram_message(
+                                            f"🤖 **Auto Approved!**\n"
+                                            f"User: `{td['user_id']}`\n"
+                                            f"App: {app['name']}\n"
+                                            f"Name: {td['review_name']}\n"
+                                            f"💰 Amount: ৳{price:.2f}", 
+                                            chat_id=log_id
+                                        )
+                                        send_telegram_message(
+                                            f"🎉 আপনার কাজটি **অটোমেটিক এপ্রুভ** হয়েছে! ৳{price:.2f} যোগ হয়েছে।", 
+                                            chat_id=td['user_id']
+                                        )
+                                    break
                 except Exception as e:
                     logger.error(f"App Check Error: {e}")
+                    
+            time.sleep(900)  # Sleep for 15 minutes
+            
         except Exception as e:
-            logger.error(f"Loop Error: {e}")
-        time.sleep(300)
+            logger.error(f"Automation Loop Error: {e}")
+            time.sleep(60)
 
 # ==========================================
-# 6. এডমিন প্যানেল
+# 6. ওয়েবসাইট API ইন্টিগ্রেশন
+# ==========================================
+
+app = Flask(__name__)
+
+@app.route('/')
+def home(): 
+    return "Bot is Alive & Updated!"
+
+@app.route('/api/web_submit', methods=['POST'])
+def web_submit_task():
+    """API endpoint for website task submission"""
+    try:
+        # Authentication
+        auth_token = request.headers.get('Authorization')
+        if not auth_token or auth_token != f"Bearer {WEB_API_TOKEN}":
+            return jsonify({"error": "Unauthorized"}), 401
+        
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        # Required fields
+        required_fields = ['user_id', 'app_id', 'review_name', 'email', 'device', 'screenshot']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing field: {field}"}), 400
+        
+        # Get user
+        user = get_user(data['user_id'])
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        if user.get('is_blocked'):
+            return jsonify({"error": "User is blocked"}), 403
+        
+        # Get config
+        config = get_config()
+        
+        # Check app
+        app_info = next((a for a in config['monitored_apps'] if a['id'] == data['app_id']), None)
+        if not app_info:
+            return jsonify({"error": "App not found"}), 404
+        
+        # Check limit
+        limit = app_info.get('limit', 1000)
+        count = get_app_task_count(data['app_id'])
+        if count >= limit:
+            return jsonify({"error": "App limit reached"}), 400
+        
+        # Save task
+        task_ref = db.collection('tasks').add({
+            "user_id": str(data['user_id']),
+            "app_id": data['app_id'],
+            "review_name": data['review_name'],
+            "email": data['email'],
+            "device": data['device'],
+            "screenshot": data['screenshot'],
+            "status": "pending",
+            "submitted_at": datetime.now(),
+            "price": config['task_price'],
+            "source": "website",
+            "last_checked": datetime.now(),
+            "check_count": 0
+        })
+        
+        task_id = task_ref[1].id
+        
+        # Send to log channel
+        log_msg = (
+            f"🌐 **Website Task Submitted**\n"
+            f"👤 User: `{data['user_id']}` ({user.get('name', 'N/A')})\n"
+            f"📱 App: **{app_info['name']}**\n"
+            f"✍️ Name: {data['review_name']}\n"
+            f"📧 Email: {data['email']}\n"
+            f"📱 Device: {data['device']}\n"
+            f"🖼 Proof: [View Screenshot]({data['screenshot']})\n"
+            f"💰 Price: ৳{config['task_price']:.2f}\n"
+            f"⏰ Time: {datetime.now().strftime('%I:%M %p')}"
+        )
+        
+        # Send to Telegram
+        send_telegram_message(
+            log_msg,
+            chat_id=config.get('log_channel_id', OWNER_ID)
+        )
+        
+        # Auto check and approve if possible
+        rating, content, review_time = check_playstore_review(data['app_id'], data['review_name'])
+        if rating == 5:
+            approve_task(task_id, data['user_id'], config['task_price'])
+            return jsonify({
+                "success": True,
+                "message": "Task submitted and auto-approved",
+                "task_id": task_id,
+                "auto_approved": True
+            }), 200
+        
+        return jsonify({
+            "success": True,
+            "message": "Task submitted successfully",
+            "task_id": task_id,
+            "auto_approved": False
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Web submit error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/web_withdraw', methods=['POST'])
+def web_withdraw_request():
+    """API endpoint for website withdrawal requests"""
+    try:
+        # Authentication
+        auth_token = request.headers.get('Authorization')
+        if not auth_token or auth_token != f"Bearer {WEB_API_TOKEN}":
+            return jsonify({"error": "Unauthorized"}), 401
+        
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        # Required fields
+        required_fields = ['user_id', 'method', 'number', 'amount']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing field: {field}"}), 400
+        
+        # Get user
+        user = get_user(data['user_id'])
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        if user.get('is_blocked'):
+            return jsonify({"error": "User is blocked"}), 403
+        
+        # Get config
+        config = get_config()
+        
+        # Check minimum withdrawal
+        if float(data['amount']) < config['min_withdraw']:
+            return jsonify({
+                "error": f"Minimum withdrawal amount is ৳{config['min_withdraw']:.2f}"
+            }), 400
+        
+        # Check balance
+        if float(data['amount']) > user['balance']:
+            return jsonify({"error": "Insufficient balance"}), 400
+        
+        # Process withdrawal
+        db.collection('users').document(str(data['user_id'])).update({
+            "balance": firestore.Increment(-float(data['amount']))
+        })
+        
+        wd_ref = db.collection('withdrawals').add({
+            "user_id": str(data['user_id']),
+            "user_name": user.get('name', 'Unknown'),
+            "amount": float(data['amount']),
+            "method": data['method'],
+            "number": data['number'],
+            "status": "pending",
+            "time": datetime.now(),
+            "source": "website"
+        })
+        
+        wd_id = wd_ref[1].id
+        
+        # Send to log channel
+        log_msg = (
+            f"🌐 **Website Withdrawal Request**\n"
+            f"👤 User: `{data['user_id']}` ({user.get('name', 'Unknown')})\n"
+            f"💰 Amount: ৳{float(data['amount']):.2f}\n"
+            f"📱 Method: {data['method']} ({data['number']})\n"
+            f"🔢 Balance Left: ৳{user['balance'] - float(data['amount']):.2f}"
+        )
+        
+        send_telegram_message(
+            log_msg,
+            chat_id=config.get('log_channel_id', OWNER_ID)
+        )
+        
+        return jsonify({
+            "success": True,
+            "message": "Withdrawal request submitted",
+            "withdrawal_id": wd_id
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Web withdraw error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    """API status check"""
+    return jsonify({
+        "status": "online",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.0"
+    }), 200
+
+def run_flask():
+    """Run Flask server"""
+    app.run(host='0.0.0.0', port=PORT, debug=False)
+
+# ==========================================
+# 7. এডমিন প্যানেল - নতুন অপশন যোগ করা হয়েছে
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -977,7 +1402,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Bonus", callback_data="adm_finance")],
         [InlineKeyboardButton("📱 Apps Manage", callback_data="adm_apps"), InlineKeyboardButton("👮 Manage Admins", callback_data="adm_admins")],
         [InlineKeyboardButton("🎨 Buttons & Time", callback_data="adm_content"), InlineKeyboardButton("📢 Log Channel", callback_data="adm_log")],
-        [InlineKeyboardButton("📊 Reports & Export", callback_data="adm_reports")],
+        [InlineKeyboardButton("🤖 Auto Settings", callback_data="adm_auto"), InlineKeyboardButton("📊 Reports & Export", callback_data="adm_reports")],
         [InlineKeyboardButton("🔙 Back to User Mode", callback_data="back_home")]
     ]
     await query.edit_message_text("⚙️ **Super Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
@@ -991,29 +1416,63 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         users = db.collection('users').stream()
         total_u = 0
         total_bal = 0.0
+        total_ref = 0
         for u in users:
             total_u += 1
             total_bal += u.to_dict().get('balance', 0)
+            total_ref += u.to_dict().get('referral_count', 0)
 
         msg = (
             f"📊 **Statistics**\n\n"
             f"👥 Total Users: `{total_u}`\n"
-            f"💰 Total Liability (User Balances): `৳{total_bal:.2f}`\n\n"
-            "Select Action:"
+            f"💰 Total Liability: `৳{total_bal:.2f}`\n"
+            f"👥 Total Referrals: `{total_ref}`\n"
+            f"📈 Active Today: Checking..."
         )
         kb = [[InlineKeyboardButton("🔍 Manage Specific User", callback_data="find_user")],
+              [InlineKeyboardButton("📈 Daily Report", callback_data="daily_report")],
               [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data == "adm_finance":
         config = get_config()
+        # Calculate total withdrawals
+        withdrawals_ref = db.collection('withdrawals').where('status', '==', 'approved').stream()
+        total_withdrawn = sum([w.to_dict().get('amount', 0) for w in withdrawals_ref])
+        
         msg = (
-            f"💸 **Finance Config**\n\n"
-            f"Current Refer Bonus: ৳{config['referral_bonus']:.2f}\n"
-            f"Min Withdraw: ৳{config['min_withdraw']:.2f}"
+            f"💸 **Finance Overview**\n\n"
+            f"💰 Task Price: ৳{config['task_price']:.2f}\n"
+            f"🎁 Refer Bonus: ৳{config['referral_bonus']:.2f}\n"
+            f"📤 Min Withdraw: ৳{config['min_withdraw']:.2f}\n"
+            f"💵 Total Withdrawn: ৳{total_withdrawn:.2f}"
         )
-        kb = [[InlineKeyboardButton("✏️ Change Ref Bonus", callback_data="ed_txt_referral_bonus")],
-              [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
+        kb = [
+            [InlineKeyboardButton("✏️ Change Task Price", callback_data="ed_txt_task_price")],
+            [InlineKeyboardButton("✏️ Change Ref Bonus", callback_data="ed_txt_referral_bonus")],
+            [InlineKeyboardButton("✏️ Change Min Withdraw", callback_data="ed_txt_min_withdraw")],
+            [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
+        ]
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif data == "adm_auto":
+        config = get_config()
+        auto_time = config.get('auto_approve_time', '20:30')
+        check_interval = config.get('check_interval_hours', 24)
+        
+        msg = (
+            f"🤖 **Auto System Settings**\n\n"
+            f"⏰ Auto Approve Time: `{auto_time}`\n"
+            f"🔄 Check Interval: `{check_interval}` hours\n"
+            f"✅ Daily Auto Approve: Enabled\n"
+            f"❌ 24-Hour Auto Reject: Enabled"
+        )
+        kb = [
+            [InlineKeyboardButton("✏️ Set Auto Time", callback_data="set_auto_time")],
+            [InlineKeyboardButton("✏️ Set Check Interval", callback_data="set_check_interval")],
+            [InlineKeyboardButton("▶️ Run Manual Check", callback_data="run_manual_check")],
+            [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]
+        ]
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data == "adm_apps":
@@ -1022,7 +1481,8 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if config['monitored_apps']:
             for a in config['monitored_apps']:
                 limit = a.get('limit', 'N/A')
-                apps_list += f"- {a['name']} (Lim: {limit})\n  ID: `{a['id']}`\n"
+                count = get_app_task_count(a['id'])
+                apps_list += f"- {a['name']} (Lim: {limit}, Done: {count})\n  ID: `{a['id']}`\n"
         else:
             apps_list = "No apps added."
 
@@ -1038,9 +1498,11 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         config = get_config()
         st = config.get("work_start_time", "10:00")
         et = config.get("work_end_time", "22:00")
+        at = config.get("auto_approve_time", "20:30")
 
         kb = [
             [InlineKeyboardButton(f"⏰ Start: {st}", callback_data="set_time_start"), InlineKeyboardButton(f"⏰ End: {et}", callback_data="set_time_end")],
+            [InlineKeyboardButton(f"🤖 Auto: {at}", callback_data="set_auto_time")],
             [InlineKeyboardButton("📝 Edit Rules Text", callback_data="ed_txt_rules"), InlineKeyboardButton("⏰ Edit Schedule Text", callback_data="ed_txt_schedule")],
             [InlineKeyboardButton("🔘 Button Names/Visibility", callback_data="ed_btns")],
             [InlineKeyboardButton("➕ Add Custom Button", callback_data="add_cus_btn"), InlineKeyboardButton("➖ Remove Custom Button", callback_data="rmv_cus_btn")],
@@ -1070,8 +1532,19 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
     elif data == "adm_reports":
+        # Calculate today's stats
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_tasks = db.collection('tasks').where('submitted_at', '>=', today_start).stream()
+        today_count = len(list(today_tasks))
+        
+        today_approved = db.collection('tasks').where('approved_at', '>=', today_start).where('status', '==', 'approved').stream()
+        approved_count = len(list(today_approved))
+        
         msg = (
             "📊 **Reports & Export**\n\n"
+            f"📅 **Today's Stats:**\n"
+            f"📝 Submitted: {today_count}\n"
+            f"✅ Approved: {approved_count}\n\n"
             "Download Approved Tasks data as **CSV/Spreadsheet**.\n"
             "You can share this file with buyers as proof."
         )
@@ -1079,242 +1552,78 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("📜 All Time History (ALL)", callback_data="rep_all")],
             [InlineKeyboardButton("📅 Last 7 Days (ALL)", callback_data="rep_7d")],
             [InlineKeyboardButton("🕒 Last 24 Hours (ALL)", callback_data="rep_24h")],
+            [InlineKeyboardButton("📈 Daily Summary", callback_data="daily_summary")],
             [InlineKeyboardButton("🔙 Back", callback_data="admin_panel")]
         ]
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Generating report... Please wait.")
+    elif data == "daily_summary":
+        # Generate daily summary
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Get today's tasks
+        tasks_ref = db.collection('tasks').where('submitted_at', '>=', today_start).stream()
+        tasks_data = []
+        for t in tasks_ref:
+            tasks_data.append(t.to_dict())
+        
+        # Get today's withdrawals
+        withdrawals_ref = db.collection('withdrawals').where('time', '>=', today_start).stream()
+        withdrawals_data = []
+        for w in withdrawals_ref:
+            withdrawals_data.append(w.to_dict())
+        
+        # Calculate stats
+        total_tasks = len(tasks_data)
+        approved_tasks = len([t for t in tasks_data if t.get('status') == 'approved'])
+        pending_tasks = len([t for t in tasks_data if t.get('status') == 'pending'])
+        total_withdrawals = len(withdrawals_data)
+        approved_withdrawals = len([w for w in withdrawals_data if w.get('status') == 'approved'])
+        
+        msg = (
+            f"📈 **Daily Summary - {datetime.now().strftime('%d/%m/%Y')}**\n\n"
+            f"📊 **Tasks:**\n"
+            f"• Total: {total_tasks}\n"
+            f"• Approved: {approved_tasks}\n"
+            f"• Pending: {pending_tasks}\n\n"
+            f"💰 **Withdrawals:**\n"
+            f"• Total: {total_withdrawals}\n"
+            f"• Approved: {approved_withdrawals}\n\n"
+            f"📅 Generated: {datetime.now().strftime('%I:%M %p')}"
+        )
+        
+        await query.edit_message_text(msg, parse_mode="Markdown", 
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_reports")]]))
 
-    data_code = query.data
-    now = datetime.now()
-    cutoff_date = None
-    file_prefix = "Report"
+    elif data == "run_manual_check":
+        # Run manual check
+        await query.answer("Running manual check...")
+        check_24_hour_reviews()
+        await query.edit_message_text("✅ Manual check completed!", 
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_auto")]]))
 
-    if data_code == "rep_7d":
-        cutoff_date = now - timedelta(days=7)
-        file_prefix = "All_Apps_7Days"
-    elif data_code == "rep_24h":
-        cutoff_date = now - timedelta(hours=24)
-        file_prefix = "All_Apps_24Hours"
-    elif data_code == "rep_all":
-        file_prefix = "All_Apps_AllTime"
+async def set_auto_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("⏰ Enter AUTO APPROVE Time (24 Hour Format, e.g., 20:30):")
+    context.user_data['edit_key'] = 'auto_approve_time'
+    return ADMIN_EDIT_TEXT_VAL
 
-    tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
-    data_rows = []
+async def set_check_interval_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("🔄 Enter Check Interval in Hours (e.g., 24):")
+    context.user_data['edit_key'] = 'check_interval_hours'
+    return ADMIN_EDIT_TEXT_VAL
 
-    for t in tasks_ref:
-        t_data = t.to_dict()
-        approved_at = t_data.get('approved_at')
-
-        if approved_at:
-            if cutoff_date:
-                if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
-                    continue
-            date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            date_str = "N/A"
-            if cutoff_date: continue
-
-        data_rows.append([
-            t.id,
-            t_data.get('user_id', ''),
-            t_data.get('app_id', ''),
-            t_data.get('review_name', ''),
-            t_data.get('email', ''),
-            t_data.get('device', ''),
-            t_data.get('screenshot', ''),
-            t_data.get('price', 0),
-            date_str
-        ])
-
-    if not data_rows:
-        await query.message.reply_text("❌ No data found for this selection.")
-        return
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date"])
-    writer.writerows(data_rows)
-
-    output.seek(0)
-    byte_output = io.BytesIO(output.getvalue().encode('utf-8'))
-
-    filename = f"{file_prefix}_{now.strftime('%Y%m%d')}.csv"
-
-    caption_msg = (
-        f"📊 **Export Generated**\n"
-        f"📂 File: `{filename}`\n"
-        f"✅ Total Rows: {len(data_rows)}\n"
-        f"📅 Date: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    await context.bot.send_document(
-        chat_id=query.from_user.id,
-        document=byte_output,
-        filename=filename,
-        caption=caption_msg,
-        parse_mode="Markdown"
-    )
-
-# --- Admin Management Functions ---
-
-async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("🆔 Enter the Telegram User ID to make Admin:")
-    return ADMIN_ADD_ADMIN_ID
-
-async def add_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    if not uid.isdigit():
-        await update.message.reply_text("❌ ID must be numeric.")
-        return ConversationHandler.END
-
-    db.collection('users').document(uid).set({"is_admin": True}, merge=True)
-    await update.message.reply_text(f"✅ User `{uid}` is now an Admin!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def rmv_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("🆔 Enter the Telegram User ID to Remove from Admin:")
-    return ADMIN_RMV_ADMIN_ID
-
-async def rmv_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    if uid == str(OWNER_ID):
-        await update.message.reply_text("❌ Cannot remove Owner.")
-        return ConversationHandler.END
-
-    user_ref = db.collection('users').document(uid)
-    if user_ref.get().exists:
-        user_ref.update({"is_admin": False})
-        await update.message.reply_text(f"✅ User `{uid}` removed from Admin.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    else:
-        db.collection('users').document(uid).set({"is_admin": False, "id": uid, "name": "Unknown"}, merge=True)
-        await update.message.reply_text(f"✅ User `{uid}` removed from Admin.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-
-    return ConversationHandler.END
-
-# --- Log Channel Config ---
-
-async def set_log_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("📢 Enter Group/Channel ID (e.g. -100123456789):")
-    return ADMIN_SET_LOG_CHANNEL
-
-async def set_log_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.message.text.strip()
-    update_config({"log_channel_id": cid})
-    await update.message.reply_text(f"✅ Log Channel Set to `{cid}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-# --- TIME SETTING HANDLERS ---
-
-async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⏰ Enter START Time (24 Hour Format, e.g., 15:30 or 23:00):")
-    return ADMIN_SET_START_TIME
-
-async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t_str = update.message.text.strip()
-    try:
-        datetime.strptime(t_str, "%H:%M")
-        update_config({"work_start_time": t_str})
-        await update.message.reply_text(f"✅ Start Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    except ValueError:
-        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 15:30).")
-    return ConversationHandler.END
-
-async def set_time_end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⏰ Enter END Time (24 Hour Format, e.g., 23:00 or 15:30):")
-    return ADMIN_SET_END_TIME
-
-async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t_str = update.message.text.strip()
-    try:
-        datetime.strptime(t_str, "%H:%M")
-        update_config({"work_end_time": t_str})
-        await update.message.reply_text(f"✅ End Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    except ValueError:
-        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 23:00).")
-    return ConversationHandler.END
-
-# --- Existing Admin Functions ---
-
-async def find_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("🔍 Enter User ID to manage:")
-    return ADMIN_USER_SEARCH
-
-async def find_user_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    user = get_user(uid)
-    if not user:
-        await update.message.reply_text("❌ User not found. Try again or /cancel.")
-        return ADMIN_USER_SEARCH
-
-    context.user_data['mng_uid'] = uid
-    status = "🔴 Blocked" if user.get('is_blocked') else "🟢 Active"
-    role = "👑 Admin" if user.get('is_admin') else "👤 User"
-
-    msg = (
-        f"👤 **User Found**\n"
-        f"ID: `{uid}`\nName: {user.get('name', 'N/A')}\n"
-        f"Balance: ৳{user.get('balance', 0):.2f}\n"
-        f"Status: {status} | Role: {role}"
-    )
-
-    kb = [
-        [InlineKeyboardButton("➕ Add Money", callback_data="u_add_bal"), InlineKeyboardButton("➖ Deduct Money", callback_data="u_cut_bal")],
-        [InlineKeyboardButton("⛔ Block/Unblock", callback_data="u_toggle_block"), InlineKeyboardButton("👑 Make/Remove Admin", callback_data="u_toggle_admin")],
-        [InlineKeyboardButton("🔙 Cancel", callback_data="cancel")]
-    ]
-    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
-    return ADMIN_USER_ACTION
-
-async def user_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    uid = context.user_data['mng_uid']
-
-    if data == "cancel": return await cancel_conv(update, context)
-
-    if data == "u_toggle_block":
-        user = get_user(uid)
-        new_stat = not user.get('is_blocked', False)
-        db.collection('users').document(uid).update({"is_blocked": new_stat})
-        await query.edit_message_text(f"✅ User {'Blocked' if new_stat else 'Unblocked'}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-
-    elif data == "u_toggle_admin":
-        if uid == str(OWNER_ID):
-            await query.answer("Cannot change owner role", show_alert=True)
-            return
-        user = get_user(uid)
-        new_stat = not user.get('is_admin', False)
-        db.collection('users').document(uid).update({"is_admin": new_stat})
-        await query.edit_message_text(f"✅ User role changed to {'Admin' if new_stat else 'User'}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-
-    elif data in ["u_add_bal", "u_cut_bal"]:
-        context.user_data['bal_action'] = "add" if "add" in data else "cut"
-        await query.edit_message_text(f"Enter amount to {'Add' if 'add' in data else 'Deduct'}:")
-        return ADMIN_USER_AMOUNT
-
-async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        amount = float(update.message.text)
-        uid = context.user_data['mng_uid']
-        action = context.user_data['bal_action']
-
-        final_amt = amount if action == "add" else -amount
-        db.collection('users').document(uid).update({"balance": firestore.Increment(final_amt)})
-
-        await update.message.reply_text(f"✅ Successfully {'Added' if action=='add' else 'Deduct'} ৳{amount:.2f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    except:
-        await update.message.reply_text("❌ Invalid Amount.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
+# Add these new patterns to the existing edit_text_start function
 async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    key_map = {"ed_txt_rules": "rules_text", "ed_txt_schedule": "schedule_text", "ed_txt_referral_bonus": "referral_bonus"}
+    key_map = {
+        "ed_txt_rules": "rules_text", 
+        "ed_txt_schedule": "schedule_text", 
+        "ed_txt_referral_bonus": "referral_bonus",
+        "ed_txt_task_price": "task_price",
+        "ed_txt_min_withdraw": "min_withdraw",
+        "set_auto_time": "auto_approve_time",
+        "set_check_interval": "check_interval_hours"
+    }
 
     key = key_map.get(query.data)
     if not key: return ConversationHandler.END
@@ -1327,251 +1636,20 @@ async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"📝 **Editing {key}**\nCurrent Value: `{curr_val}`\n\nEnter new value:")
     return ADMIN_EDIT_TEXT_VAL
 
-async def edit_text_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text
-    key = context.user_data['edit_key']
-
-    if key in ["referral_bonus", "min_withdraw"]:
-        try: val = float(val)
-        except: 
-            await update.message.reply_text("❌ Must be a number")
-            return ConversationHandler.END
-
-    update_config({key: val})
-    await update.message.reply_text("✅ Saved!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def edit_buttons_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    config = get_config()
-    btns = config.get('buttons', DEFAULT_CONFIG['buttons'])
-
-    kb = []
-    for key, data in btns.items():
-        status = "✅" if data['show'] else "❌"
-        kb.append([
-            InlineKeyboardButton(f"{status} {data['text']}", callback_data=f"btntog_{key}"),
-            InlineKeyboardButton("✏️ Rename", callback_data=f"btnren_{key}")
-        ])
-    kb.append([InlineKeyboardButton("🔙 Back", callback_data="adm_content")])
-
-    await query.edit_message_text("Select Button to Edit:", reply_markup=InlineKeyboardMarkup(kb))
-
-async def button_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data.startswith("btntog_"):
-        key = data.split("_")[1]
-        config = get_config()
-        curr = config['buttons'][key]['show']
-        config['buttons'][key]['show'] = not curr
-        update_config({"buttons": config['buttons']})
-        await edit_buttons_menu(update, context)
-
-    elif data.startswith("btnren_"):
-        context.user_data['ren_key'] = data.split("_")[1]
-        await query.edit_message_text(f"Enter new name for button:")
-        return ADMIN_EDIT_BTN_NAME
-
-async def button_rename_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_name = update.message.text
-    key = context.user_data['ren_key']
-    config = get_config()
-    config['buttons'][key]['text'] = new_name
-    update_config({"buttons": config['buttons']})
-    await update.message.reply_text("✅ Renamed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def add_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("Enter Button Name:")
-    return ADMIN_ADD_BTN_NAME
-
-async def add_custom_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['c_btn_name'] = update.message.text
-    await update.message.reply_text("Enter Button Link (URL):")
-    return ADMIN_ADD_BTN_LINK
-
-async def add_custom_btn_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = update.message.text
-    name = context.user_data['c_btn_name']
-
-    config = get_config()
-    c_btns = config.get('custom_buttons', [])
-    c_btns.append({"text": name, "url": link})
-    update_config({"custom_buttons": c_btns})
-
-    await update.message.reply_text("✅ Button Added!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-# --- REMOVE CUSTOM BUTTON FUNCTIONS ---
-
-async def rmv_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config = get_config()
-    c_btns = config.get('custom_buttons', [])
-
-    if not c_btns:
-        await update.callback_query.answer("❌ কোনো কাস্টম বাটন পাওয়া যায়নি!", show_alert=True)
-        return ConversationHandler.END
-
-    kb = []
-    for i, btn in enumerate(c_btns):
-        kb.append([InlineKeyboardButton(f"🗑️ {btn['text']}", callback_data=f"rm_cus_btn_{i}")])
-
-    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-
-    await update.callback_query.edit_message_text("কোন বাটনটি রিমুভ করতে চান?", reply_markup=InlineKeyboardMarkup(kb))
-    return REMOVE_CUS_BTN
-
-async def rmv_custom_btn_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
-
-    try:
-        idx = int(query.data.split("rm_cus_btn_")[1])
-        config = get_config()
-        c_btns = config.get('custom_buttons', [])
-
-        if 0 <= idx < len(c_btns):
-            removed_name = c_btns[idx]['text']
-            del c_btns[idx]
-            update_config({"custom_buttons": c_btns})
-
-            await query.edit_message_text(f"✅ বাটন '{removed_name}' রিমুভ করা হয়েছে!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        else:
-            await query.edit_message_text("❌ বাটন খুঁজে পাওয়া যায়নি।")
-
-    except Exception as e:
-        logger.error(f"Remove Custom Btn Error: {e}")
-        await query.edit_message_text("❌ এরর হয়েছে।")
-
-    return ConversationHandler.END
-
-# --- APP MANAGEMENT ---
-
-async def add_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("App Package ID (e.g. com.example.app):")
-    return ADD_APP_ID
-
-async def add_app_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['nid'] = update.message.text.strip()
-    await update.message.reply_text("App Name:")
-    return ADD_APP_NAME
-
-async def add_app_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['nname'] = update.message.text.strip()
-    await update.message.reply_text("Set Task Limit (e.g. 100):")
-    return ADD_APP_LIMIT
-
-async def add_app_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        limit = int(update.message.text.strip())
-        config = get_config()
-        apps = config.get('monitored_apps', [])
-
-        apps.append({
-            "id": context.user_data['nid'], 
-            "name": context.user_data['nname'],
-            "limit": limit
-        })
-
-        update_config({"monitored_apps": apps})
-        await update.message.reply_text(f"✅ App Added with limit {limit}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Limit must be a number. Try again.")
-        return ADD_APP_LIMIT
-
-async def rmv_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config = get_config()
-    apps = config.get('monitored_apps', [])
-    if not apps:
-        await update.callback_query.answer("No apps", show_alert=True)
-        return ConversationHandler.END
-
-    btns = [[InlineKeyboardButton(f"🗑️ {a['name']}", callback_data=f"rm_{i}")] for i, a in enumerate(apps)]
-    btns.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-    await update.callback_query.edit_message_text("Remove which app?", reply_markup=InlineKeyboardMarkup(btns))
-    return REMOVE_APP_SELECT
-
-async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
-
-    try:
-        idx = int(query.data.split("rm_")[1])
-        config = get_config()
-        apps = config.get('monitored_apps', [])
-
-        if 0 <= idx < len(apps):
-            del apps[idx]
-            update_config({"monitored_apps": apps})
-            await query.edit_message_text("✅ App Removed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        else:
-            await query.edit_message_text("❌ Error: Invalid selection index.")
-    except:
-        await query.edit_message_text("❌ Error during removal.")
-
-    return ConversationHandler.END
-
-async def edit_app_limit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config = get_config()
-    apps = config.get('monitored_apps', [])
-    if not apps:
-        await update.callback_query.answer("No apps found", show_alert=True)
-        return ConversationHandler.END
-
-    btns = [[InlineKeyboardButton(f"{a['name']} (Limit: {a.get('limit', 'N/A')})", callback_data=f"edlim_{i}")] for i, a in enumerate(apps)]
-    btns.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-
-    await update.callback_query.edit_message_text("Select App to Edit Limit:", reply_markup=InlineKeyboardMarkup(btns))
-    return EDIT_APP_SELECT
-
-async def edit_app_limit_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
-
-    idx = int(query.data.split("edlim_")[1])
-    context.user_data['ed_app_idx'] = idx
-
-    await query.edit_message_text("Enter New Limit (Number):")
-    return EDIT_APP_LIMIT_VAL
-
-async def edit_app_limit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        new_limit = int(update.message.text.strip())
-        idx = context.user_data['ed_app_idx']
-
-        config = get_config()
-        apps = config.get('monitored_apps', [])
-
-        if 0 <= idx < len(apps):
-            apps[idx]['limit'] = new_limit
-            update_config({"monitored_apps": apps})
-            await update.message.reply_text(f"✅ Limit updated to {new_limit}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-        else:
-            await update.message.reply_text("❌ Error: App not found.")
-
-        return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Invalid number.")
-        return EDIT_APP_LIMIT_VAL
+# Add these new callback handlers in the main function
+application.add_handler(CallbackQueryHandler(set_auto_time_start, pattern="^set_auto_time$"))
+application.add_handler(CallbackQueryHandler(set_check_interval_start, pattern="^set_check_interval$"))
+application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_auto|daily_summary|run_manual_check)$"))
 
 # ==========================================
-# 7. মেইন রানার
+# 8. মেইন রানার
 # ==========================================
-
-app = Flask(__name__)
-@app.route('/')
-def home(): return "Bot is Alive & Updated!"
-
-def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
 
 def main():
+    # Start Flask server in separate thread
     threading.Thread(target=run_flask, daemon=True).start()
+    
+    # Start automation in separate thread
     threading.Thread(target=run_automation, daemon=True).start()
 
     application = ApplicationBuilder().token(TOKEN).build()
@@ -1581,10 +1659,11 @@ def main():
     application.add_handler(CommandHandler("password", password_command))
     application.add_handler(CommandHandler("newpass", new_password_command))
     application.add_handler(CommandHandler("webpass", password_command))
+    application.add_handler(CommandHandler("profile", lambda u, c: common_callback(u, c, "my_profile")))
 
     # Admin panel
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
-    application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log|adm_reports)$"))
+    application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log|adm_reports|adm_auto|daily_summary|run_manual_check)$"))
     application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h)$"))
 
     # Button edit
@@ -1659,7 +1738,7 @@ def main():
     # Text and button edit
     application.add_handler(ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_rules|ed_txt_schedule|ed_txt_referral_bonus)$"),
+            CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_rules|ed_txt_schedule|ed_txt_referral_bonus|ed_txt_task_price|ed_txt_min_withdraw|set_auto_time|set_check_interval)$"),
             CallbackQueryHandler(button_action_handler, pattern="^btnren_")
         ],
         states={
@@ -1723,7 +1802,10 @@ def main():
     # Common callbacks
     application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule|show_password|reset_password)$"))
 
-    print("🚀 Bot Started...")
+    print("🚀 Bot Started with all updates...")
+    print(f"🌐 Web API Token: {WEB_API_TOKEN}")
+    print(f"🔗 Web API Endpoint: /api/web_submit")
+    print(f"🤖 Auto System: Enabled (Daily at 20:30)")
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
