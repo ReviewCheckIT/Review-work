@@ -311,19 +311,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     row1 = []
-    if btns_conf['submit']['show']: row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
-    if btns_conf['profile']['show']: row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
-    if row1: keyboard.append(row1)
+    if btns_conf['submit']['show']: 
+        row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
+    if btns_conf['profile']['show']: 
+        row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
+    if row1: 
+        keyboard.append(row1)
 
     row2 = []
-    if btns_conf['withdraw']['show']: row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
-    if btns_conf['refer']['show']: row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
-    if row2: keyboard.append(row2)
+    if btns_conf['withdraw']['show']: 
+        row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
+    if btns_conf['refer']['show']: 
+        row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
+    if row2: 
+        keyboard.append(row2)
 
     row3 = []
-    if btns_conf.get('schedule', {}).get('show', True): row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
+    if btns_conf.get('schedule', {}).get('show', True): 
+        row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
     row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
-    if row3: keyboard.append(row3)
+    if row3: 
+        keyboard.append(row3)
 
     custom_btns = config.get('custom_buttons', [])
     for btn in custom_btns:
@@ -341,9 +349,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Start Error: {e}")
+                # Send simple message if error
+                await update.callback_query.edit_message_text(
+                    welcome_msg,
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("💰 কাজ জমা দিন", callback_data="submit_task")],
+                        [InlineKeyboardButton("👤 প্রোফাইল", callback_data="my_profile")],
+                        [InlineKeyboardButton("📤 উইথড্র", callback_data="start_withdraw")],
+                        [InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home")]
+                    ])
+                )
     else:
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
-
 async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = get_user(user_id)
