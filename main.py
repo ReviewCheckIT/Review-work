@@ -436,7 +436,7 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
                     [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
                     [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
-                    [InlineKeyboardButton("🔙", callback_data="back_home")]
+                    [InlineKeyboardButton("🔙 হোম", callback_data="back_home")]
                 ])
             )
 
@@ -480,7 +480,52 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 msg, 
                 parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+            )
+        
+        elif query.data == "show_password":
+            user = get_user(query.from_user.id)
+            if user and user.get('web_password'):
+                await query.edit_message_text(
+                    f"🔐 **আপনার পাসওয়ার্ড:** `{user['web_password']}`\n\n"
+                    f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
+                    f"📱 টেলিগ্রাম আইডি: `{query.from_user.id}`\n"
+                    f"🔑 পাসওয়ার্ড: `{user['web_password']}`",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
+                        [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
+                    ])
+                )
+        
+        elif query.data == "reset_password":
+            user_id = query.from_user.id
+            new_password = str(random.randint(100000, 999999))
+            db.collection('users').document(str(user_id)).update({'web_password': new_password})
+            
+            await query.edit_message_text(
+                f"✅ **নতুন পাসওয়ার্ড জেনারেট করা হয়েছে!**\n\n"
+                f"🔐 **নতুন পাসওয়ার্ড:** `{new_password}`\n\n"
+                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
+                f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
+                f"🔑 পাসওয়ার্ড: `{new_password}`\n\n"
+                f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
+                    [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
+                ])
+            )
+            
+    except BadRequest as e:
+        if "Message is not modified" in str(e): 
+            pass
+        else: 
+            logger.error(f"Callback Error: {e}")
+            # Send a simple message if there's an error
+            await query.edit_message_text(
+                "❌ প্রোফাইল লোড করতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
             )
         
         elif query.data == "show_password":
