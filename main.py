@@ -1636,10 +1636,313 @@ async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"📝 **Editing {key}**\nCurrent Value: `{curr_val}`\n\nEnter new value:")
     return ADMIN_EDIT_TEXT_VAL
 
-# Add these new callback handlers in the main function
-application.add_handler(CallbackQueryHandler(set_auto_time_start, pattern="^set_auto_time$"))
-application.add_handler(CallbackQueryHandler(set_check_interval_start, pattern="^set_check_interval$"))
-application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_auto|daily_summary|run_manual_check)$"))
+async def edit_text_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    val = update.message.text
+    key = context.user_data['edit_key']
+
+    if key in ["referral_bonus", "min_withdraw", "task_price", "check_interval_hours"]:
+        try: val = float(val)
+        except: 
+            await update.message.reply_text("❌ Must be a number")
+            return ConversationHandler.END
+
+    update_config({key: val})
+    await update.message.reply_text("✅ Saved!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    return ConversationHandler.END
+
+async def edit_buttons_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    config = get_config()
+    btns = config.get('buttons', DEFAULT_CONFIG['buttons'])
+
+    kb = []
+    for key, data in btns.items():
+        status = "✅" if data['show'] else "❌"
+        kb.append([
+            InlineKeyboardButton(f"{status} {data['text']}", callback_data=f"btntog_{key}"),
+            InlineKeyboardButton("✏️ Rename", callback_data=f"btnren_{key}")
+        ])
+    kb.append([InlineKeyboardButton("🔙 Back", callback_data="adm_content")])
+
+    await query.edit_message_text("Select Button to Edit:", reply_markup=InlineKeyboardMarkup(kb))
+
+async def button_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data.startswith("btntog_"):
+        key = data.split("_")[1]
+        config = get_config()
+        curr = config['buttons'][key]['show']
+        config['buttons'][key]['show'] = not curr
+        update_config({"buttons": config['buttons']})
+        await edit_buttons_menu(update, context)
+
+    elif data.startswith("btnren_"):
+        context.user_data['ren_key'] = data.split("_")[1]
+        await query.edit_message_text(f"Enter new name for button:")
+        return ADMIN_EDIT_BTN_NAME
+
+async def button_rename_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_name = update.message.text
+    key = context.user_data['ren_key']
+    config = get_config()
+    config['buttons'][key]['text'] = new_name
+    update_config({"buttons": config['buttons']})
+    await update.message.reply_text("✅ Renamed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    return ConversationHandler.END
+
+async def add_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("Enter Button Name:")
+    return ADMIN_ADD_BTN_NAME
+
+async def add_custom_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['c_btn_name'] = update.message.text
+    await update.message.reply_text("Enter Button Link (URL):")
+    return ADMIN_ADD_BTN_LINK
+
+async def add_custom_btn_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    link = update.message.text
+    name = context.user_data['c_btn_name']
+
+    config = get_config()
+    c_btns = config.get('custom_buttons', [])
+    c_btns.append({"text": name, "url": link})
+    update_config({"custom_buttons": c_btns})
+
+    await update.message.reply_text("✅ Button Added!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    return ConversationHandler.END
+
+# --- REMOVE CUSTOM BUTTON FUNCTIONS ---
+
+async def rmv_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config = get_config()
+    c_btns = config.get('custom_buttons', [])
+
+    if not c_btns:
+        await update.callback_query.answer("❌ কোনো কাস্টম বাটন পাওয়া যায়নি!", show_alert=True)
+        return ConversationHandler.END
+
+    kb = []
+    for i, btn in enumerate(c_btns):
+        kb.append([InlineKeyboardButton(f"🗑️ {btn['text']}", callback_data=f"rm_cus_btn_{i}")])
+
+    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+
+    await update.callback_query.edit_message_text("কোন বাটনটি রিমুভ করতে চান?", reply_markup=InlineKeyboardMarkup(kb))
+    return REMOVE_CUS_BTN
+
+async def rmv_custom_btn_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.data == "cancel": return await cancel_conv(update, context)
+
+    try:
+        idx = int(query.data.split("rm_cus_btn_")[1])
+        config = get_config()
+        c_btns = config.get('custom_buttons', [])
+
+        if 0 <= idx < len(c_btns):
+            removed_name = c_btns[idx]['text']
+            del c_btns[idx]
+            update_config({"custom_buttons": c_btns})
+
+            await query.edit_message_text(f"✅ বাটন '{removed_name}' রিমুভ করা হয়েছে!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        else:
+            await query.edit_message_text("❌ বাটন খুঁজে পাওয়া যায়নি।")
+
+    except Exception as e:
+        logger.error(f"Remove Custom Btn Error: {e}")
+        await query.edit_message_text("❌ এরর হয়েছে।")
+
+    return ConversationHandler.END
+
+# --- APP MANAGEMENT ---
+
+async def add_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("App Package ID (e.g. com.example.app):")
+    return ADD_APP_ID
+
+async def add_app_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['nid'] = update.message.text.strip()
+    await update.message.reply_text("App Name:")
+    return ADD_APP_NAME
+
+async def add_app_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['nname'] = update.message.text.strip()
+    await update.message.reply_text("Set Task Limit (e.g. 100):")
+    return ADD_APP_LIMIT
+
+async def add_app_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        limit = int(update.message.text.strip())
+        config = get_config()
+        apps = config.get('monitored_apps', [])
+
+        apps.append({
+            "id": context.user_data['nid'], 
+            "name": context.user_data['nname'],
+            "limit": limit
+        })
+
+        update_config({"monitored_apps": apps})
+        await update.message.reply_text(f"✅ App Added with limit {limit}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("❌ Limit must be a number. Try again.")
+        return ADD_APP_LIMIT
+
+async def rmv_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config = get_config()
+    apps = config.get('monitored_apps', [])
+    if not apps:
+        await update.callback_query.answer("No apps", show_alert=True)
+        return ConversationHandler.END
+
+    btns = [[InlineKeyboardButton(f"🗑️ {a['name']}", callback_data=f"rm_{i}")] for i, a in enumerate(apps)]
+    btns.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    await update.callback_query.edit_message_text("Remove which app?", reply_markup=InlineKeyboardMarkup(btns))
+    return REMOVE_APP_SELECT
+
+async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.data == "cancel": return await cancel_conv(update, context)
+
+    try:
+        idx = int(query.data.split("rm_")[1])
+        config = get_config()
+        apps = config.get('monitored_apps', [])
+
+        if 0 <= idx < len(apps):
+            del apps[idx]
+            update_config({"monitored_apps": apps})
+            await query.edit_message_text("✅ App Removed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        else:
+            await query.edit_message_text("❌ Error: Invalid selection index.")
+    except:
+        await query.edit_message_text("❌ Error during removal.")
+
+    return ConversationHandler.END
+
+async def edit_app_limit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    config = get_config()
+    apps = config.get('monitored_apps', [])
+    if not apps:
+        await update.callback_query.answer("No apps found", show_alert=True)
+        return ConversationHandler.END
+
+    btns = [[InlineKeyboardButton(f"{a['name']} (Limit: {a.get('limit', 'N/A')})", callback_data=f"edlim_{i}")] for i, a in enumerate(apps)]
+    btns.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+
+    await update.callback_query.edit_message_text("Select App to Edit Limit:", reply_markup=InlineKeyboardMarkup(btns))
+    return EDIT_APP_SELECT
+
+async def edit_app_limit_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.data == "cancel": return await cancel_conv(update, context)
+
+    idx = int(query.data.split("edlim_")[1])
+    context.user_data['ed_app_idx'] = idx
+
+    await query.edit_message_text("Enter New Limit (Number):")
+    return EDIT_APP_LIMIT_VAL
+
+async def edit_app_limit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        new_limit = int(update.message.text.strip())
+        idx = context.user_data['ed_app_idx']
+
+        config = get_config()
+        apps = config.get('monitored_apps', [])
+
+        if 0 <= idx < len(apps):
+            apps[idx]['limit'] = new_limit
+            update_config({"monitored_apps": apps})
+            await update.message.reply_text(f"✅ Limit updated to {new_limit}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        else:
+            await update.message.reply_text("❌ Error: App not found.")
+
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number.")
+        return EDIT_APP_LIMIT_VAL
+
+# --- User management ---
+
+async def find_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("🔍 Enter User ID to manage:")
+    return ADMIN_USER_SEARCH
+
+async def find_user_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.text.strip()
+    user = get_user(uid)
+    if not user:
+        await update.message.reply_text("❌ User not found. Try again or /cancel.")
+        return ADMIN_USER_SEARCH
+
+    context.user_data['mng_uid'] = uid
+    status = "🔴 Blocked" if user.get('is_blocked') else "🟢 Active"
+    role = "👑 Admin" if user.get('is_admin') else "👤 User"
+
+    msg = (
+        f"👤 **User Found**\n"
+        f"ID: `{uid}`\nName: {user.get('name', 'N/A')}\n"
+        f"Balance: ৳{user.get('balance', 0):.2f}\n"
+        f"Status: {status} | Role: {role}"
+    )
+
+    kb = [
+        [InlineKeyboardButton("➕ Add Money", callback_data="u_add_bal"), InlineKeyboardButton("➖ Deduct Money", callback_data="u_cut_bal")],
+        [InlineKeyboardButton("⛔ Block/Unblock", callback_data="u_toggle_block"), InlineKeyboardButton("👑 Make/Remove Admin", callback_data="u_toggle_admin")],
+        [InlineKeyboardButton("🔙 Cancel", callback_data="cancel")]
+    ]
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+    return ADMIN_USER_ACTION
+
+async def user_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    uid = context.user_data['mng_uid']
+
+    if data == "cancel": return await cancel_conv(update, context)
+
+    if data == "u_toggle_block":
+        user = get_user(uid)
+        new_stat = not user.get('is_blocked', False)
+        db.collection('users').document(uid).update({"is_blocked": new_stat})
+        await query.edit_message_text(f"✅ User {'Blocked' if new_stat else 'Unblocked'}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+
+    elif data == "u_toggle_admin":
+        if uid == str(OWNER_ID):
+            await query.answer("Cannot change owner role", show_alert=True)
+            return
+        user = get_user(uid)
+        new_stat = not user.get('is_admin', False)
+        db.collection('users').document(uid).update({"is_admin": new_stat})
+        await query.edit_message_text(f"✅ User role changed to {'Admin' if new_stat else 'User'}!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+
+    elif data in ["u_add_bal", "u_cut_bal"]:
+        context.user_data['bal_action'] = "add" if "add" in data else "cut"
+        await query.edit_message_text(f"Enter amount to {'Add' if 'add' in data else 'Deduct'}:")
+        return ADMIN_USER_AMOUNT
+
+async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        amount = float(update.message.text)
+        uid = context.user_data['mng_uid']
+        action = context.user_data['bal_action']
+
+        final_amt = amount if action == "add" else -amount
+        db.collection('users').document(uid).update({"balance": firestore.Increment(final_amt)})
+
+        await update.message.reply_text(f"✅ Successfully {'Added' if action=='add' else 'Deduct'} ৳{amount:.2f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    except:
+        await update.message.reply_text("❌ Invalid Amount.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+    return ConversationHandler.END
 
 # ==========================================
 # 8. মেইন রানার
@@ -1652,6 +1955,7 @@ def main():
     # Start automation in separate thread
     threading.Thread(target=run_automation, daemon=True).start()
 
+    # Create the Telegram bot application
     application = ApplicationBuilder().token(TOKEN).build()
 
     # Add command handlers
@@ -1659,12 +1963,10 @@ def main():
     application.add_handler(CommandHandler("password", password_command))
     application.add_handler(CommandHandler("newpass", new_password_command))
     application.add_handler(CommandHandler("webpass", password_command))
-    application.add_handler(CommandHandler("profile", lambda u, c: common_callback(u, c, "my_profile")))
 
     # Admin panel
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
     application.add_handler(CallbackQueryHandler(admin_sub_handlers, pattern="^(adm_users|adm_finance|adm_apps|adm_content|adm_admins|adm_log|adm_reports|adm_auto|daily_summary|run_manual_check)$"))
-    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h)$"))
 
     # Button edit
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
@@ -1802,10 +2104,16 @@ def main():
     # Common callbacks
     application.add_handler(CallbackQueryHandler(common_callback, pattern="^(my_profile|refer_friend|back_home|show_schedule|show_password|reset_password)$"))
 
+    # Auto time and interval settings handlers
+    application.add_handler(CallbackQueryHandler(set_auto_time_start, pattern="^set_auto_time$"))
+    application.add_handler(CallbackQueryHandler(set_check_interval_start, pattern="^set_check_interval$"))
+
     print("🚀 Bot Started with all updates...")
     print(f"🌐 Web API Token: {WEB_API_TOKEN}")
     print(f"🔗 Web API Endpoint: /api/web_submit")
     print(f"🤖 Auto System: Enabled (Daily at 20:30)")
+    
+    # Run the bot
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
