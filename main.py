@@ -168,17 +168,21 @@ def is_working_hour():
         return True
 
 def is_admin(user_id):
-    if str(user_id) == str(OWNER_ID): return True
+    if str(user_id) == str(OWNER_ID):
+        return True
     try:
         user = db.collection('users').document(str(user_id)).get()
         return user.exists and user.to_dict().get('is_admin', False)
-    except: return False
+    except:
+        return False
 
 def get_user(user_id):
     try:
         doc = db.collection('users').document(str(user_id)).get()
-        if doc.exists: return doc.to_dict()
-    except: pass
+        if doc.exists:
+            return doc.to_dict()
+    except:
+        pass
     return None
 
 def get_referral_count(user_id):
@@ -251,12 +255,14 @@ async def send_log_message(context, text, reply_markup=None):
             logger.error(f"Log Send Error: {e}")
 
 def get_ai_summary(text, rating):
-    if not model: return "N/A"
+    if not model:
+        return "N/A"
     try:
         prompt = f"Review: '{text}' ({rating}/5). Summarize sentiment in Bangla (max 10 words). Start with 'মুড:'"
         response = model.generate_content(prompt)
         return response.text.strip()
-    except: return "N/A"
+    except:
+        return "N/A"
 
 def get_app_task_count(app_id):
     try:
@@ -269,14 +275,15 @@ def get_app_task_count(app_id):
         return 0
 
 def send_telegram_message(message, chat_id=None, reply_markup=None):
-    if not chat_id: return
+    if not chat_id:
+        return
     try:
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
         if reply_markup:
             if hasattr(reply_markup, 'to_dict'):
-                 payload["reply_markup"] = reply_markup.to_dict()
+                payload["reply_markup"] = reply_markup.to_dict()
             else:
-                 payload["reply_markup"] = reply_markup
+                payload["reply_markup"] = reply_markup
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json=payload, timeout=10)
     except Exception as e:
         logger.error(f"Telegram Send Error: {e}")
@@ -311,26 +318,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     row1 = []
-    if btns_conf['submit']['show']: 
+    if btns_conf['submit']['show']:
         row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
-    if btns_conf['profile']['show']: 
+    if btns_conf['profile']['show']:
         row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
-    if row1: 
+    if row1:
         keyboard.append(row1)
 
     row2 = []
-    if btns_conf['withdraw']['show']: 
+    if btns_conf['withdraw']['show']:
         row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
-    if btns_conf['refer']['show']: 
+    if btns_conf['refer']['show']:
         row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
-    if row2: 
+    if row2:
         keyboard.append(row2)
 
     row3 = []
-    if btns_conf.get('schedule', {}).get('show', True): 
+    if btns_conf.get('schedule', {}).get('show', True):
         row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
     row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
-    if row3: 
+    if row3:
         keyboard.append(row3)
 
     custom_btns = config.get('custom_buttons', [])
@@ -349,19 +356,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except BadRequest as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Start Error: {e}")
-                # Send simple message if error
-                await update.callback_query.edit_message_text(
-                    welcome_msg,
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("💰 কাজ জমা দিন", callback_data="submit_task")],
-                        [InlineKeyboardButton("👤 প্রোফাইল", callback_data="my_profile")],
-                        [InlineKeyboardButton("📤 উইথড্র", callback_data="start_withdraw")],
-                        [InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home")]
-                    ])
-                )
     else:
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="Markdown")
+
 async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = get_user(user_id)
@@ -540,49 +537,6 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         else: 
             logger.error(f"Callback Error: {e}")
-            # Send a simple message if there's an error
-            await query.edit_message_text(
-                "❌ প্রোফাইল লোড করতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-            )
-        
-        elif query.data == "show_password":
-            user = get_user(query.from_user.id)
-            if user and user.get('web_password'):
-                await query.edit_message_text(
-                    f"🔐 **আপনার পাসওয়ার্ড:** `{user['web_password']}`\n\n"
-                    f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
-                    f"📱 টেলিগ্রাম আইডি: `{query.from_user.id}`\n"
-                    f"🔑 পাসওয়ার্ড: `{user['web_password']}`",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
-                        [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
-                    ])
-                )
-        
-        elif query.data == "reset_password":
-            user_id = query.from_user.id
-            new_password = str(random.randint(100000, 999999))
-            db.collection('users').document(str(user_id)).update({'web_password': new_password})
-            
-            await query.edit_message_text(
-                f"✅ **নতুন পাসওয়ার্ড জেনারেট করা হয়েছে!**\n\n"
-                f"🔐 **নতুন পাসওয়ার্ড:** `{new_password}`\n\n"
-                f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}\n\n"
-                f"📱 টেলিগ্রাম আইডি: `{user_id}`\n"
-                f"🔑 পাসওয়ার্ড: `{new_password}`\n\n"
-                f"⚠️ এই পাসওয়ার্ডটি কাউকে দিবেন না!",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
-                    [InlineKeyboardButton("🔙 প্রোফাইল", callback_data="my_profile")]
-                ])
-            )
-            
-    except BadRequest as e:
-        if "Message is not modified" in str(e): pass
-        else: logger.error(f"Callback Error: {e}")
 
 # --- Withdrawal System ---
 
@@ -612,7 +566,8 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def withdraw_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel":
+        return await cancel_conv(update, context)
 
     context.user_data['wd_method'] = "Bkash" if "bkash" in query.data else "Nagad"
     await query.edit_message_text(f"আপনার {context.user_data['wd_method']} নাম্বারটি দিন:")
@@ -632,11 +587,11 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(update.message.text)
 
         if amount < config['min_withdraw']:
-             await update.message.reply_text(
-                 f"❌ সর্বনিম্ন উইথড্র ৳{config['min_withdraw']:.2f}", 
-                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-             )
-             return ConversationHandler.END
+            await update.message.reply_text(
+                f"❌ সর্বনিম্ন উইথড্র ৳{config['min_withdraw']:.2f}", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+            )
+            return ConversationHandler.END
 
         if amount > user['balance']:
             await update.message.reply_text(
@@ -787,7 +742,8 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
 async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel":
+        return await cancel_conv(update, context)
 
     app_id = query.data.split("sel_")[1]
     config = get_config()
@@ -804,12 +760,12 @@ async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = get_app_task_count(app_id)
 
     if count >= limit:
-         await query.edit_message_text(
-             f"⛔ **দুঃখিত!**\n\n`{app['name']}` এর কাজের লিমিট শেষ হয়ে গেছে ({count}/{limit})।\nএডমিন লিমিট বাড়ালে আবার কাজ করতে পারবেন।", 
-             parse_mode="Markdown",
-             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-         )
-         return ConversationHandler.END
+        await query.edit_message_text(
+            f"⛔ **দুঃখিত!**\n\n`{app['name']}` এর কাজের লিমিট শেষ হয়ে গেছে ({count}/{limit})।\nএডমিন লিমিট বাড়ালে আবার কাজ করতে পারবেন।", 
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+        )
+        return ConversationHandler.END
 
     context.user_data['tid'] = app_id
 
@@ -934,13 +890,14 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
             )
     except:
-         try: 
-             await context.bot.send_message(
-                 chat_id=update.effective_chat.id, 
-                 text="❌ বাতিল করা হয়েছে।",
-                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-             )
-         except: pass
+        try: 
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, 
+                text="❌ বাতিল করা হয়েছে।",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+            )
+        except:
+            pass
     return ConversationHandler.END
 
 async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1247,10 +1204,7 @@ def run_automation():
             time.sleep(60)
 
 # ==========================================
-# 6. ওয়েবসাইট API ইন্টিগ্রেশন
-# ==========================================
-# ==========================================
-# TIME SETTING HANDLERS - যোগ করতে হবে
+# 6. TIME SETTING HANDLERS - NEW SECTION
 # ==========================================
 
 async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1357,7 +1311,8 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
         else:
             date_str = "N/A"
-            if cutoff_date: continue
+            if cutoff_date:
+                continue
 
         data_rows.append([
             t.id,
@@ -1399,6 +1354,11 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         caption=caption_msg,
         parse_mode="Markdown"
     )
+
+# ==========================================
+# 7. ওয়েবসাইট API ইন্টিগ্রেশন
+# ==========================================
+
 app = Flask(__name__)
 
 @app.route('/')
@@ -1601,7 +1561,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT, debug=False)
 
 # ==========================================
-# 7. এডমিন প্যানেল - নতুন অপশন যোগ করা হয়েছে
+# 8. এডমিন প্যানেল - নতুন অপশন যোগ করা হয়েছে
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1824,7 +1784,6 @@ async def set_check_interval_start(update: Update, context: ContextTypes.DEFAULT
     context.user_data['edit_key'] = 'check_interval_hours'
     return ADMIN_EDIT_TEXT_VAL
 
-# Add these new patterns to the existing edit_text_start function
 async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     key_map = {
@@ -1838,7 +1797,8 @@ async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     key = key_map.get(query.data)
-    if not key: return ConversationHandler.END
+    if not key:
+        return ConversationHandler.END
 
     context.user_data['edit_key'] = key
 
@@ -1853,7 +1813,8 @@ async def edit_text_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = context.user_data['edit_key']
 
     if key in ["referral_bonus", "min_withdraw", "task_price", "check_interval_hours"]:
-        try: val = float(val)
+        try:
+            val = float(val)
         except: 
             await update.message.reply_text("❌ Must be a number")
             return ConversationHandler.END
@@ -1948,7 +1909,8 @@ async def rmv_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def rmv_custom_btn_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel":
+        return await cancel_conv(update, context)
 
     try:
         idx = int(query.data.split("rm_cus_btn_")[1])
@@ -2019,7 +1981,8 @@ async def rmv_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel":
+        return await cancel_conv(update, context)
 
     try:
         idx = int(query.data.split("rm_")[1])
@@ -2052,7 +2015,8 @@ async def edit_app_limit_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def edit_app_limit_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel": return await cancel_conv(update, context)
+    if query.data == "cancel":
+        return await cancel_conv(update, context)
 
     idx = int(query.data.split("edlim_")[1])
     context.user_data['ed_app_idx'] = idx
@@ -2118,7 +2082,8 @@ async def user_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
     uid = context.user_data['mng_uid']
 
-    if data == "cancel": return await cancel_conv(update, context)
+    if data == "cancel":
+        return await cancel_conv(update, context)
 
     if data == "u_toggle_block":
         user = get_user(uid)
@@ -2157,7 +2122,7 @@ async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 # ==========================================
-# 8. মেইন রানার
+# 9. মেইন রানার
 # ==========================================
 
 def main():
@@ -2319,6 +2284,9 @@ def main():
     # Auto time and interval settings handlers
     application.add_handler(CallbackQueryHandler(set_auto_time_start, pattern="^set_auto_time$"))
     application.add_handler(CallbackQueryHandler(set_check_interval_start, pattern="^set_check_interval$"))
+
+    # Export report handlers
+    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h)$"))
 
     print("🚀 Bot Started with all updates...")
     print(f"🌐 Web API Token: {WEB_API_TOKEN}")
