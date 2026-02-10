@@ -133,6 +133,23 @@ def get_config():
             for key, val in DEFAULT_CONFIG.items():
                 if key not in data:
                     data[key] = val
+            
+            # ✅ বাটনে callback_data যোগ কর
+            if 'buttons' in data:
+                buttons = data['buttons']
+                button_callbacks = {
+                    'submit': 'submit_task',
+                    'profile': 'my_profile',
+                    'withdraw': 'start_withdraw',
+                    'refer': 'refer_friend',
+                    'schedule': 'show_schedule'
+                }
+                
+                for btn_key, btn_data in buttons.items():
+                    if isinstance(btn_data, dict):
+                        if btn_key in button_callbacks:
+                            btn_data['callback_data'] = button_callbacks[btn_key]
+            
             return data
         else:
             ref.set(DEFAULT_CONFIG)
