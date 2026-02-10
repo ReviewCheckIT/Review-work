@@ -426,36 +426,37 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.data == "back_home":
             await start(update, context)
 
- elif query.data == "my_profile":
-    user = get_user(query.from_user.id)
-    if user:
-        referral_count = get_referral_count(query.from_user.id)
-        msg = (
-            f"👤 **প্রোফাইল**\n\n"
-            f"🆔 ID: `{user['id']}`\n"
-            f"👤 নাম: {user.get('name', 'N/A')}\n"
-            f"💰 ব্যালেন্স: ৳{user['balance']:.2f}\n"
-            f"✅ সম্পন্ন টাস্ক: {user['total_tasks']}\n"
-            f"👥 রেফার করেছে: {referral_count} জন\n"
-            f"🔑 ওয়েব পাসওয়ার্ড: `{user.get('web_password', 'সেট করা নেই')}`\n\n"
-            f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
-        )
-    else:
-        msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
-    
-    await query.edit_message_text(
-        msg, 
-        parse_mode="Markdown", 
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔑 পাসওয়ার্ড দেখুন", callback_data="show_password")],
-            [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
-            [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
-            [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
-            [InlineKeyboardButton("🔙 হোম", callback_data="back_home")]
-        ])
-    )
+        elif query.data == "my_profile":
+            user = get_user(query.from_user.id)
+            if user:
+                referral_count = get_referral_count(query.from_user.id)
+                msg = (
+                    f"👤 **প্রোফাইল**\n\n"
+                    f"🆔 ID: `{user['id']}`\n"
+                    f"👤 নাম: {user.get('name', 'N/A')}\n"
+                    f"💰 ব্যালেন্স: ৳{user['balance']:.2f}\n"
+                    f"✅ সম্পন্ন টাস্ক: {user['total_tasks']}\n"
+                    f"👥 রেফার করেছে: {referral_count} জন\n"
+                    f"🔑 ওয়েব পাসওয়ার্ড: `{user.get('web_password', 'সেট করা নেই')}`\n\n"
+                    f"🌐 **ওয়েব ড্যাশবোর্ড:** {WEB_URL}"
+                )
+            else:
+                msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
+            
+            await query.edit_message_text(
+                msg, 
+                parse_mode="Markdown", 
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔑 পাসওয়ার্ড দেখুন", callback_data="show_password")],
+                    [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
+                    [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
+                    [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
+                    [InlineKeyboardButton("🔙 হোম", callback_data="back_home")]
+                ])
+            )
 
         elif query.data == "refer_friend":
+            # ... বাকি কোড
             config = get_config()
             user = get_user(query.from_user.id)
             referral_count = get_referral_count(query.from_user.id)
