@@ -133,23 +133,6 @@ def get_config():
             for key, val in DEFAULT_CONFIG.items():
                 if key not in data:
                     data[key] = val
-            
-            # ✅ বাটনে callback_data যোগ কর
-            if 'buttons' in data:
-                buttons = data['buttons']
-                button_callbacks = {
-                    'submit': 'submit_task',
-                    'profile': 'my_profile',
-                    'withdraw': 'start_withdraw',
-                    'refer': 'refer_friend',
-                    'schedule': 'show_schedule'
-                }
-                
-                for btn_key, btn_data in buttons.items():
-                    if isinstance(btn_data, dict):
-                        if btn_key in button_callbacks:
-                            btn_data['callback_data'] = button_callbacks[btn_key]
-            
             return data
         else:
             ref.set(DEFAULT_CONFIG)
@@ -185,21 +168,17 @@ def is_working_hour():
         return True
 
 def is_admin(user_id):
-    if str(user_id) == str(OWNER_ID):
-        return True
+    if str(user_id) == str(OWNER_ID): return True
     try:
         user = db.collection('users').document(str(user_id)).get()
         return user.exists and user.to_dict().get('is_admin', False)
-    except:
-        return False
+    except: return False
 
 def get_user(user_id):
     try:
         doc = db.collection('users').document(str(user_id)).get()
-        if doc.exists:
-            return doc.to_dict()
-    except:
-        pass
+        if doc.exists: return doc.to_dict()
+    except: pass
     return None
 
 def get_referral_count(user_id):
@@ -272,14 +251,12 @@ async def send_log_message(context, text, reply_markup=None):
             logger.error(f"Log Send Error: {e}")
 
 def get_ai_summary(text, rating):
-    if not model:
-        return "N/A"
+    if not model: return "N/A"
     try:
         prompt = f"Review: '{text}' ({rating}/5). Summarize sentiment in Bangla (max 10 words). Start with 'মুড:'"
         response = model.generate_content(prompt)
         return response.text.strip()
-    except:
-        return "N/A"
+    except: return "N/A"
 
 def get_app_task_count(app_id):
     try:
@@ -292,15 +269,14 @@ def get_app_task_count(app_id):
         return 0
 
 def send_telegram_message(message, chat_id=None, reply_markup=None):
-    if not chat_id:
-        return
+    if not chat_id: return
     try:
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
         if reply_markup:
             if hasattr(reply_markup, 'to_dict'):
-                payload["reply_markup"] = reply_markup.to_dict()
+                 payload["reply_markup"] = reply_markup.to_dict()
             else:
-                payload["reply_markup"] = reply_markup
+                 payload["reply_markup"] = reply_markup
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json=payload, timeout=10)
     except Exception as e:
         logger.error(f"Telegram Send Error: {e}")
@@ -335,32 +311,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     row1 = []
-    if btns_conf.get('submit', {}).get('show', True):
-        callback_data = btns_conf['submit'].get('callback_data', 'submit_task')
-        row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data=callback_data))
-    if btns_conf.get('profile', {}).get('show', True):
-        callback_data = btns_conf['profile'].get('callback_data', 'my_profile')
-        row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data=callback_data))
-    if row1:
-        keyboard.append(row1)
+    if btns_conf['submit']['show']: row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
+    if btns_conf['profile']['show']: row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
+    if row1: keyboard.append(row1)
 
     row2 = []
-    if btns_conf.get('withdraw', {}).get('show', True):
-        callback_data = btns_conf['withdraw'].get('callback_data', 'start_withdraw')
-        row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data=callback_data))
-    if btns_conf.get('refer', {}).get('show', True):
-        callback_data = btns_conf['refer'].get('callback_data', 'refer_friend')
-        row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data=callback_data))
-    if row2:
-        keyboard.append(row2)
+    if btns_conf['withdraw']['show']: row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
+    if btns_conf['refer']['show']: row2.append(InlineKeyboardButton(btns_conf['refer']['text'], callback_data="refer_friend"))
+    if row2: keyboard.append(row2)
 
     row3 = []
-    if btns_conf.get('schedule', {}).get('show', True):
-        callback_data = btns_conf['schedule'].get('callback_data', 'show_schedule')
-        row3.append(InlineKeyboardButton(btns_conf['schedule']['text'], callback_data=callback_data))
+    if btns_conf.get('schedule', {}).get('show', True): row3.append(InlineKeyboardButton(btns_conf.get('schedule', {}).get('text', "📅 সময়সূচী"), callback_data="show_schedule"))
     row3.append(InlineKeyboardButton("🔄 রিফ্রেশ", callback_data="back_home"))
-    if row3:
-        keyboard.append(row3)
+    if row3: keyboard.append(row3)
 
     custom_btns = config.get('custom_buttons', [])
     for btn in custom_btns:
@@ -473,12 +436,11 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("🔄 নতুন পাসওয়ার্ড", callback_data="reset_password")],
                     [InlineKeyboardButton("📢 রেফার", callback_data="refer_friend")],
                     [InlineKeyboardButton("🌐 ওয়েব ড্যাশবোর্ড", url=WEB_URL)],
-                    [InlineKeyboardButton("🔙 হোম", callback_data="back_home")]
+                    [InlineKeyboardButton("🔙", callback_data="back_home")]
                 ])
             )
 
         elif query.data == "refer_friend":
-            # ... বাকি কোড
             config = get_config()
             user = get_user(query.from_user.id)
             referral_count = get_referral_count(query.from_user.id)
@@ -518,7 +480,7 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 msg, 
                 parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]])
             )
         
         elif query.data == "show_password":
@@ -556,10 +518,8 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
     except BadRequest as e:
-        if "Message is not modified" in str(e): 
-            pass
-        else: 
-            logger.error(f"Callback Error: {e}")
+        if "Message is not modified" in str(e): pass
+        else: logger.error(f"Callback Error: {e}")
 
 # --- Withdrawal System ---
 
@@ -589,8 +549,7 @@ async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def withdraw_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "cancel":
-        return await cancel_conv(update, context)
+    if query.data == "cancel": return await cancel_conv(update, context)
 
     context.user_data['wd_method'] = "Bkash" if "bkash" in query.data else "Nagad"
     await query.edit_message_text(f"আপনার {context.user_data['wd_method']} নাম্বারটি দিন:")
@@ -610,11 +569,11 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(update.message.text)
 
         if amount < config['min_withdraw']:
-            await update.message.reply_text(
-                f"❌ সর্বনিম্ন উইথড্র ৳{config['min_withdraw']:.2f}", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-            )
-            return ConversationHandler.END
+             await update.message.reply_text(
+                 f"❌ সর্বনিম্ন উইথড্র ৳{config['min_withdraw']:.2f}", 
+                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+             )
+             return ConversationHandler.END
 
         if amount > user['balance']:
             await update.message.reply_text(
@@ -765,8 +724,7 @@ async def start_task_submission(update: Update, context: ContextTypes.DEFAULT_TY
 async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "cancel":
-        return await cancel_conv(update, context)
+    if query.data == "cancel": return await cancel_conv(update, context)
 
     app_id = query.data.split("sel_")[1]
     config = get_config()
@@ -783,12 +741,12 @@ async def app_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     count = get_app_task_count(app_id)
 
     if count >= limit:
-        await query.edit_message_text(
-            f"⛔ **দুঃখিত!**\n\n`{app['name']}` এর কাজের লিমিট শেষ হয়ে গেছে ({count}/{limit})।\nএডমিন লিমিট বাড়ালে আবার কাজ করতে পারবেন।", 
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-        )
-        return ConversationHandler.END
+         await query.edit_message_text(
+             f"⛔ **দুঃখিত!**\n\n`{app['name']}` এর কাজের লিমিট শেষ হয়ে গেছে ({count}/{limit})।\nএডমিন লিমিট বাড়ালে আবার কাজ করতে পারবেন।", 
+             parse_mode="Markdown",
+             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+         )
+         return ConversationHandler.END
 
     context.user_data['tid'] = app_id
 
@@ -913,14 +871,13 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
             )
     except:
-        try: 
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id, 
-                text="❌ বাতিল করা হয়েছে।",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
-            )
-        except:
-            pass
+         try: 
+             await context.bot.send_message(
+                 chat_id=update.effective_chat.id, 
+                 text="❌ বাতিল করা হয়েছে।",
+                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 হোম", callback_data="back_home")]])
+             )
+         except: pass
     return ConversationHandler.END
 
 async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1227,159 +1184,7 @@ def run_automation():
             time.sleep(60)
 
 # ==========================================
-# 6. TIME SETTING HANDLERS - NEW SECTION
-# ==========================================
-
-async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⏰ Enter START Time (24 Hour Format, e.g., 15:30 or 23:00):")
-    return ADMIN_SET_START_TIME
-
-async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t_str = update.message.text.strip()
-    try:
-        datetime.strptime(t_str, "%H:%M")
-        update_config({"work_start_time": t_str})
-        await update.message.reply_text(f"✅ Start Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    except ValueError:
-        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 15:30).")
-    return ConversationHandler.END
-
-async def set_time_end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("⏰ Enter END Time (24 Hour Format, e.g., 23:00 or 15:30):")
-    return ADMIN_SET_END_TIME
-
-async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t_str = update.message.text.strip()
-    try:
-        datetime.strptime(t_str, "%H:%M")
-        update_config({"work_end_time": t_str})
-        await update.message.reply_text(f"✅ End Time set to {t_str}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    except ValueError:
-        await update.message.reply_text("❌ Invalid Format! Use HH:MM (e.g. 23:00).")
-    return ConversationHandler.END
-
-async def set_log_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("📢 Enter Group/Channel ID (e.g. -100123456789):")
-    return ADMIN_SET_LOG_CHANNEL
-
-async def set_log_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.message.text.strip()
-    update_config({"log_channel_id": cid})
-    await update.message.reply_text(f"✅ Log Channel Set to `{cid}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("🆔 Enter the Telegram User ID to make Admin:")
-    return ADMIN_ADD_ADMIN_ID
-
-async def add_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    if not uid.isdigit():
-        await update.message.reply_text("❌ ID must be numeric.")
-        return ConversationHandler.END
-
-    db.collection('users').document(uid).set({"is_admin": True}, merge=True)
-    await update.message.reply_text(f"✅ User `{uid}` is now an Admin!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    return ConversationHandler.END
-
-async def rmv_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.edit_message_text("🆔 Enter the Telegram User ID to Remove from Admin:")
-    return ADMIN_RMV_ADMIN_ID
-
-async def rmv_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.text.strip()
-    if uid == str(OWNER_ID):
-        await update.message.reply_text("❌ Cannot remove Owner.")
-        return ConversationHandler.END
-
-    user_ref = db.collection('users').document(uid)
-    if user_ref.get().exists:
-        user_ref.update({"is_admin": False})
-        await update.message.reply_text(f"✅ User `{uid}` removed from Admin.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-    else:
-        db.collection('users').document(uid).set({"is_admin": False, "id": uid, "name": "Unknown"}, merge=True)
-        await update.message.reply_text(f"✅ User `{uid}` removed from Admin.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
-
-    return ConversationHandler.END
-
-async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer("Generating report... Please wait.")
-
-    data_code = query.data
-    now = datetime.now()
-    cutoff_date = None
-    file_prefix = "Report"
-
-    if data_code == "rep_7d":
-        cutoff_date = now - timedelta(days=7)
-        file_prefix = "All_Apps_7Days"
-    elif data_code == "rep_24h":
-        cutoff_date = now - timedelta(hours=24)
-        file_prefix = "All_Apps_24Hours"
-    elif data_code == "rep_all":
-        file_prefix = "All_Apps_AllTime"
-
-    tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
-    data_rows = []
-
-    for t in tasks_ref:
-        t_data = t.to_dict()
-        approved_at = t_data.get('approved_at')
-
-        if approved_at:
-            if cutoff_date:
-                if approved_at.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
-                    continue
-            date_str = approved_at.strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            date_str = "N/A"
-            if cutoff_date:
-                continue
-
-        data_rows.append([
-            t.id,
-            t_data.get('user_id', ''),
-            t_data.get('app_id', ''),
-            t_data.get('review_name', ''),
-            t_data.get('email', ''),
-            t_data.get('device', ''),
-            t_data.get('screenshot', ''),
-            t_data.get('price', 0),
-            date_str
-        ])
-
-    if not data_rows:
-        await query.message.reply_text("❌ No data found for this selection.")
-        return
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Task ID", "User ID", "App ID", "Review Name", "Email", "Device", "Screenshot Proof", "Price", "Approved Date"])
-    writer.writerows(data_rows)
-
-    output.seek(0)
-    byte_output = io.BytesIO(output.getvalue().encode('utf-8'))
-
-    filename = f"{file_prefix}_{now.strftime('%Y%m%d')}.csv"
-
-    caption_msg = (
-        f"📊 **Export Generated**\n"
-        f"📂 File: `{filename}`\n"
-        f"✅ Total Rows: {len(data_rows)}\n"
-        f"📅 Date: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-
-    await context.bot.send_document(
-        chat_id=query.from_user.id,
-        document=byte_output,
-        filename=filename,
-        caption=caption_msg,
-        parse_mode="Markdown"
-    )
-
-# ==========================================
-# 7. ওয়েবসাইট API ইন্টিগ্রেশন
+# 6. ওয়েবসাইট API ইন্টিগ্রেশন
 # ==========================================
 
 app = Flask(__name__)
@@ -1584,7 +1389,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT, debug=False)
 
 # ==========================================
-# 8. এডমিন প্যানেল - নতুন অপশন যোগ করা হয়েছে
+# 7. এডমিন প্যানেল - নতুন অপশন যোগ করা হয়েছে
 # ==========================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1792,10 +1597,13 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data == "run_manual_check":
         # Run manual check
-        await query.answer("Running manual check...")
+        await query.answer("Running manual check...", show_alert=True)
         check_24_hour_reviews()
-        await query.edit_message_text("✅ Manual check completed!", 
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_auto")]]))
+        daily_auto_approve()
+        await query.edit_message_text(
+            "✅ Manual check completed!\n\n• 24-hour review check done\n• Auto approve executed", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="adm_auto")]])
+        )
 
 async def set_auto_time_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_text("⏰ Enter AUTO APPROVE Time (24 Hour Format, e.g., 20:30):")
@@ -1807,6 +1615,7 @@ async def set_check_interval_start(update: Update, context: ContextTypes.DEFAULT
     context.user_data['edit_key'] = 'check_interval_hours'
     return ADMIN_EDIT_TEXT_VAL
 
+# Add these new patterns to the existing edit_text_start function
 async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     key_map = {
@@ -1816,11 +1625,14 @@ async def edit_text_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ed_txt_task_price": "task_price",
         "ed_txt_min_withdraw": "min_withdraw",
         "set_auto_time": "auto_approve_time",
-        "set_check_interval": "check_interval_hours"
+        "set_check_interval": "check_interval_hours",
+        "set_time_start": "work_start_time",
+        "set_time_end": "work_end_time"
     }
 
     key = key_map.get(query.data)
-    if not key:
+    if not key: 
+        await query.answer("❌ Invalid option", show_alert=True)
         return ConversationHandler.END
 
     context.user_data['edit_key'] = key
@@ -1836,11 +1648,11 @@ async def edit_text_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = context.user_data['edit_key']
 
     if key in ["referral_bonus", "min_withdraw", "task_price", "check_interval_hours"]:
-        try:
+        try: 
             val = float(val)
         except: 
             await update.message.reply_text("❌ Must be a number")
-            return ConversationHandler.END
+            return ADMIN_EDIT_TEXT_VAL
 
     update_config({key: val})
     await update.message.reply_text("✅ Saved!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
@@ -1932,8 +1744,7 @@ async def rmv_custom_btn_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def rmv_custom_btn_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel":
-        return await cancel_conv(update, context)
+    if query.data == "cancel": return await cancel_conv(update, context)
 
     try:
         idx = int(query.data.split("rm_cus_btn_")[1])
@@ -2004,8 +1815,7 @@ async def rmv_app_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rmv_app_sel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel":
-        return await cancel_conv(update, context)
+    if query.data == "cancel": return await cancel_conv(update, context)
 
     try:
         idx = int(query.data.split("rm_")[1])
@@ -2038,8 +1848,7 @@ async def edit_app_limit_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def edit_app_limit_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.data == "cancel":
-        return await cancel_conv(update, context)
+    if query.data == "cancel": return await cancel_conv(update, context)
 
     idx = int(query.data.split("edlim_")[1])
     context.user_data['ed_app_idx'] = idx
@@ -2105,8 +1914,7 @@ async def user_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
     uid = context.user_data['mng_uid']
 
-    if data == "cancel":
-        return await cancel_conv(update, context)
+    if data == "cancel": return await cancel_conv(update, context)
 
     if data == "u_toggle_block":
         user = get_user(uid)
@@ -2140,9 +1948,207 @@ async def user_balance_update(update: Update, context: ContextTypes.DEFAULT_TYPE
         db.collection('users').document(uid).update({"balance": firestore.Increment(final_amt)})
 
         await update.message.reply_text(f"✅ Successfully {'Added' if action=='add' else 'Deduct'} ৳{amount:.2f}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        return ConversationHandler.END
     except:
         await update.message.reply_text("❌ Invalid Amount.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+
+# ==========================================
+# 8. মিসিং ফাংশন যোগ করা হয়েছে
+# ==========================================
+
+async def set_time_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("কাজ শুরুর সময় দিন (24H ফরম্যাট, যেমন: 15:30):")
+    context.user_data['edit_key'] = 'work_start_time'
+    return ADMIN_SET_START_TIME
+
+async def set_time_start_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    val = update.message.text.strip()
+    try:
+        # Validate time format
+        datetime.strptime(val, "%H:%M")
+        update_config({'work_start_time': val})
+        await update.message.reply_text(f"✅ সময় সেট হয়েছে: {val}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("❌ ভুল ফরম্যাট। HH:MM (24H) ফরম্যাটে দিন।")
+        return ADMIN_SET_START_TIME
+
+async def set_time_end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("কাজ শেষের সময় দিন (24H ফরম্যাট, যেমন: 23:00):")
+    context.user_data['edit_key'] = 'work_end_time'
+    return ADMIN_SET_END_TIME
+
+async def set_time_end_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    val = update.message.text.strip()
+    try:
+        datetime.strptime(val, "%H:%M")
+        update_config({'work_end_time': val})
+        await update.message.reply_text(f"✅ সময় সেট হয়েছে: {val}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("❌ ভুল ফরম্যাট। HH:MM (24H) ফরম্যাটে দিন।")
+        return ADMIN_SET_END_TIME
+
+async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("নতুন এডমিনের টেলিগ্রাম আইডি দিন:")
+    return ADMIN_ADD_ADMIN_ID
+
+async def add_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.text.strip()
+    if not uid.isdigit():
+        await update.message.reply_text("❌ আইডি শুধু নম্বর হতে হবে। আবার চেষ্টা করুন।")
+        return ADMIN_ADD_ADMIN_ID
+
+    user = get_user(uid)
+    if not user:
+        await update.message.reply_text("❌ ইউজার ডাটাবেজে নেই। ইউজারকে প্রথমে /start দিতে হবে।")
+        return ADMIN_ADD_ADMIN_ID
+
+    db.collection('users').document(uid).update({'is_admin': True})
+    await update.message.reply_text(f"✅ ইউজার {uid} এখন এডমিন।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
     return ConversationHandler.END
+
+async def rmv_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("এডমিন রোল রিমুভ করার ইউজার আইডি দিন:")
+    return ADMIN_RMV_ADMIN_ID
+
+async def rmv_admin_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.text.strip()
+    if not uid.isdigit():
+        await update.message.reply_text("❌ আইডি শুধু নম্বর হতে হবে।")
+        return ADMIN_RMV_ADMIN_ID
+
+    if uid == str(OWNER_ID):
+        await update.message.reply_text("❌ ওনারকে রিমুভ করা যাবে না।")
+        return ADMIN_RMV_ADMIN_ID
+
+    user = get_user(uid)
+    if not user:
+        await update.message.reply_text("❌ ইউজার ডাটাবেজে নেই।")
+        return ADMIN_RMV_ADMIN_ID
+
+    db.collection('users').document(uid).update({'is_admin': False})
+    await update.message.reply_text(f"✅ ইউজার {uid} আর এডমিন নেই।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
+    return ConversationHandler.END
+
+async def set_log_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.edit_message_text("লগ চ্যানেলের আইডি দিন (বটকে এডমিন করতে ভুলবেন না):")
+    return ADMIN_SET_LOG_CHANNEL
+
+async def set_log_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.text.strip()
+    update_config({'log_channel_id': chat_id})
+    await update.message.reply_text(f"✅ লগ চ্যানেল সেট হয়েছে: {chat_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 এডমিন প্যানেল", callback_data="admin_panel")]]))
+    return ConversationHandler.END
+
+# রিপোর্ট ফাংশন
+async def report_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # CSV তৈরি করুন
+    tasks_ref = db.collection('tasks').where('status', '==', 'approved').stream()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Task ID', 'User ID', 'App ID', 'Review Name', 'Email', 'Amount', 'Approved At'])
+    
+    for task in tasks_ref:
+        data = task.to_dict()
+        writer.writerow([
+            task.id,
+            data.get('user_id', ''),
+            data.get('app_id', ''),
+            data.get('review_name', ''),
+            data.get('email', ''),
+            data.get('price', 0),
+            data.get('approved_at', '').strftime('%Y-%m-%d %H:%M:%S') if hasattr(data.get('approved_at', ''), 'strftime') else ''
+        ])
+    
+    output.seek(0)
+    
+    await query.edit_message_text("📊 সব এপ্রুভ টাস্কের রিপোর্ট তৈরি হচ্ছে...")
+    
+    # CSV ফাইল পাঠান
+    await context.bot.send_document(
+        chat_id=query.from_user.id,
+        document=io.BytesIO(output.getvalue().encode()),
+        filename=f"all_tasks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        caption="📊 সম্পূর্ণ রিপোর্ট (সব এপ্রুভ টাস্ক)"
+    )
+
+async def report_7d(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # গত ৭ দিনের টাস্ক
+    cutoff = datetime.now() - timedelta(days=7)
+    
+    tasks_ref = db.collection('tasks').where('approved_at', '>=', cutoff).where('status', '==', 'approved').stream()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Task ID', 'User ID', 'App ID', 'Review Name', 'Email', 'Amount', 'Approved At'])
+    
+    for task in tasks_ref:
+        data = task.to_dict()
+        writer.writerow([
+            task.id,
+            data.get('user_id', ''),
+            data.get('app_id', ''),
+            data.get('review_name', ''),
+            data.get('email', ''),
+            data.get('price', 0),
+            data.get('approved_at', '').strftime('%Y-%m-%d %H:%M:%S') if hasattr(data.get('approved_at', ''), 'strftime') else ''
+        ])
+    
+    output.seek(0)
+    
+    await query.edit_message_text("📊 গত ৭ দিনের রিপোর্ট তৈরি হচ্ছে...")
+    
+    await context.bot.send_document(
+        chat_id=query.from_user.id,
+        document=io.BytesIO(output.getvalue().encode()),
+        filename=f"7days_tasks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        caption="📊 গত ৭ দিনের রিপোর্ট"
+    )
+
+async def report_24h(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # গত ২৪ ঘন্টার টাস্ক
+    cutoff = datetime.now() - timedelta(hours=24)
+    
+    tasks_ref = db.collection('tasks').where('approved_at', '>=', cutoff).where('status', '==', 'approved').stream()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Task ID', 'User ID', 'App ID', 'Review Name', 'Email', 'Amount', 'Approved At'])
+    
+    for task in tasks_ref:
+        data = task.to_dict()
+        writer.writerow([
+            task.id,
+            data.get('user_id', ''),
+            data.get('app_id', ''),
+            data.get('review_name', ''),
+            data.get('email', ''),
+            data.get('price', 0),
+            data.get('approved_at', '').strftime('%Y-%m-%d %H:%M:%S') if hasattr(data.get('approved_at', ''), 'strftime') else ''
+        ])
+    
+    output.seek(0)
+    
+    await query.edit_message_text("📊 গত ২৪ ঘন্টার রিপোর্ট তৈরি হচ্ছে...")
+    
+    await context.bot.send_document(
+        chat_id=query.from_user.id,
+        document=io.BytesIO(output.getvalue().encode()),
+        filename=f"24h_tasks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        caption="📊 গত ২৪ ঘন্টার রিপোর্ট"
+    )
 
 # ==========================================
 # 9. মেইন রানার
@@ -2186,7 +2192,7 @@ def main():
             T_DEVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_device)],
             T_SS: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, save_task)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # Withdrawal conversation
@@ -2197,7 +2203,7 @@ def main():
             WD_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_number)],
             WD_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel")]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # App management conversations
@@ -2208,7 +2214,7 @@ def main():
             ADD_APP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_name)],
             ADD_APP_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_app_limit)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     application.add_handler(ConversationHandler(
@@ -2217,13 +2223,15 @@ def main():
             EDIT_APP_SELECT: [CallbackQueryHandler(edit_app_limit_select, pattern="^edlim_")],
             EDIT_APP_LIMIT_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_app_limit_save)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(rmv_app_start, pattern="^rmv_app$")],
-        states={REMOVE_APP_SELECT: [CallbackQueryHandler(rmv_app_sel)]},
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        states={
+            REMOVE_APP_SELECT: [CallbackQueryHandler(rmv_app_sel, pattern="^rm_")]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # User management
@@ -2234,20 +2242,20 @@ def main():
             ADMIN_USER_ACTION: [CallbackQueryHandler(user_action_handler, pattern="^(u_add_bal|u_cut_bal|u_toggle_block|u_toggle_admin)$|^cancel$")],
             ADMIN_USER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, user_balance_update)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # Text and button edit
     application.add_handler(ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_rules|ed_txt_schedule|ed_txt_referral_bonus|ed_txt_task_price|ed_txt_min_withdraw|set_auto_time|set_check_interval)$"),
+            CallbackQueryHandler(edit_text_start, pattern="^(ed_txt_rules|ed_txt_schedule|ed_txt_referral_bonus|ed_txt_task_price|ed_txt_min_withdraw|set_auto_time|set_check_interval|set_time_start|set_time_end)$"),
             CallbackQueryHandler(button_action_handler, pattern="^btnren_")
         ],
         states={
             ADMIN_EDIT_TEXT_VAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text_save)],
             ADMIN_EDIT_BTN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, button_rename_save)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # Custom buttons
@@ -2257,7 +2265,7 @@ def main():
             ADMIN_ADD_BTN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_link)],
             ADMIN_ADD_BTN_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_btn_save)]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     application.add_handler(ConversationHandler(
@@ -2265,40 +2273,50 @@ def main():
         states={
             REMOVE_CUS_BTN: [CallbackQueryHandler(rmv_custom_btn_handle, pattern="^rm_cus_btn_")]
         },
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # Time settings
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(set_time_start_handler, pattern="^set_time_start$")],
-        states={ADMIN_SET_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_start_save)]},
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        states={
+            ADMIN_SET_START_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_start_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(set_time_end_handler, pattern="^set_time_end$")],
-        states={ADMIN_SET_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_end_save)]},
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        states={
+            ADMIN_SET_END_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_time_end_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # Admin management
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(add_admin_start, pattern="^add_new_admin$")],
-        states={ADMIN_ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_save)]},
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        states={
+            ADMIN_ADD_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(rmv_admin_start, pattern="^rmv_admin_role$")],
-        states={ADMIN_RMV_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, rmv_admin_save)]},
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        states={
+            ADMIN_RMV_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, rmv_admin_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # Log channel
     application.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(set_log_start, pattern="^set_log_id$")],
-        states={ADMIN_SET_LOG_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_log_save)]},
-        fallbacks=[CallbackQueryHandler(cancel_conv)]
+        states={
+            ADMIN_SET_LOG_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_log_save)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conv, pattern="^cancel$")]
     ))
 
     # Common callbacks
@@ -2308,8 +2326,10 @@ def main():
     application.add_handler(CallbackQueryHandler(set_auto_time_start, pattern="^set_auto_time$"))
     application.add_handler(CallbackQueryHandler(set_check_interval_start, pattern="^set_check_interval$"))
 
-    # Export report handlers
-    application.add_handler(CallbackQueryHandler(export_report_data, pattern="^(rep_all|rep_7d|rep_24h)$"))
+    # Report handlers
+    application.add_handler(CallbackQueryHandler(report_all, pattern="^rep_all$"))
+    application.add_handler(CallbackQueryHandler(report_7d, pattern="^rep_7d$"))
+    application.add_handler(CallbackQueryHandler(report_24h, pattern="^rep_24h$"))
 
     print("🚀 Bot Started with all updates...")
     print(f"🌐 Web API Token: {WEB_API_TOKEN}")
