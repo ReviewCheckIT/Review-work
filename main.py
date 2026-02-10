@@ -317,14 +317,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = []
-        row1 = []
+    row1 = []
     if btns_conf['submit']['show']:
         row1.append(InlineKeyboardButton(btns_conf['submit']['text'], callback_data="submit_task"))
     if btns_conf['profile']['show']:
         row1.append(InlineKeyboardButton(btns_conf['profile']['text'], callback_data="my_profile"))
     if row1:
         keyboard.append(row1)
-        
+
     row2 = []
     if btns_conf['withdraw']['show']:
         row2.append(InlineKeyboardButton(btns_conf['withdraw']['text'], callback_data="start_withdraw"))
