@@ -669,75 +669,140 @@ async def handle_task_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_message(chat_id=user_id, text="❌ আপনার কাজটি রিজেক্ট করা হয়েছে। সঠিক তথ্য দিয়ে আবার চেষ্টা করুন।")
 
 # ==========================================
-# 5. অটোমেশন (Play Store Monitor)
+# 5. অটোমেশন (Play Store Monitor & Web App Listener)
 # ==========================================
 
+def check_new_submissions():
+    """Web App থেকে আসা নতুন টাস্ক এবং উইথড্র চেক করে নোটিফিকেশন পাঠাবে"""
+    config = get_config()
+    log_id = config.get('log_channel_id', OWNER_ID)
+
+    # ১. পেন্ডিং টাস্ক চেক (যেগুলো নোটিফাই করা হয়নি)
+    # দ্রষ্টব্য: Firebase Query তে 'notified' ফিল্ড না থাকলে সমস্যা নেই, আমরা লুপে হ্যান্ডেল করব।
+    try:
+        # অ্যাপ থেকে আসা টাস্কের ডিফল্ট 'notified' ফিল্ড থাকে না, তাই আমরা চেক করব
+        tasks = db.collection('tasks').where('status', '==', 'pending').stream()
+        
+        for t in tasks:
+            t_data = t.to_dict()
+            # যদি ইতিমধ্যে নোটিফিকেশন না পাঠানো হয়ে থাকে
+            if not t_data.get('notified_to_admin', False):
+                
+                # নোটিফিকেশন মেসেজ
+                app_name = t_data.get('app_id', 'Unknown App') # অ্যাপ নেম বা আইডি
+                # অ্যাপ নেম বের করার চেষ্টা
+                for a in config.get('monitored_apps', []):
+                    if a['id'] == t_data['app_id']:
+                        app_name = a['name']
+                        break
+
+                log_msg = (
+                    f"📝 **New Task Submitted (Via App/Web)**\n"
+                    f"👤 User: `{t_data.get('user_id')}`\n"
+                    f"📱 App: **{app_name}**\n"
+                    f"✍️ Name: {t_data.get('review_name')}\n"
+                    f"📧 Email: {t_data.get('email')}\n"
+                    f"📱 Device: {t_data.get('device')}\n"
+                    f"🖼 Proof: [View Screenshot]({t_data.get('screenshot')})\n"
+                    f"💰 Price: ৳{t_data.get('price', 0):.2f}"
+                )
+                
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Approve", callback_data=f"t_apr_{t.id}_{t_data.get('user_id')}"),
+                     InlineKeyboardButton("❌ Reject", callback_data=f"t_rej_{t.id}_{t_data.get('user_id')}")
+                    ]
+                ])
+                
+                # মেসেজ পাঠানো এবং ডাটাবেসে আপডেট করা যে মেসেজ পাঠানো হয়েছে
+                send_telegram_message(log_msg, chat_id=log_id, reply_markup=kb)
+                db.collection('tasks').document(t.id).update({"notified_to_admin": True})
+                time.sleep(1) # টেলিগ্রাম লিমিট এড়াতে ১ সেকেন্ড বিরতি
+
+    except Exception as e:
+        logger.error(f"Task Checker Error: {e}")
+
+    # ২. পেন্ডিং উইথড্র চেক
+    try:
+        wds = db.collection('withdrawals').where('status', '==', 'pending').stream()
+        
+        for w in wds:
+            w_data = w.to_dict()
+            if not w_data.get('notified_to_admin', False):
+                
+                admin_msg = (
+                    f"💸 **New Withdrawal Request (Via App/Web)**\n"
+                    f"👤 User: `{w_data.get('user_id')}` ({w_data.get('user_name', 'User')})\n"
+                    f"💰 Amount: ৳{w_data.get('amount'):.2f}\n"
+                    f"📱 Method: {w_data.get('method')} ({w_data.get('number')})"
+                )
+                
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Approve", callback_data=f"wd_apr_{w.id}_{w_data.get('user_id')}"), 
+                     InlineKeyboardButton("❌ Reject", callback_data=f"wd_rej_{w.id}_{w_data.get('user_id')}")
+                    ]
+                ])
+                
+                send_telegram_message(admin_msg, chat_id=log_id, reply_markup=kb)
+                db.collection('withdrawals').document(w.id).update({"notified_to_admin": True})
+                time.sleep(1)
+
+    except Exception as e:
+        logger.error(f"Withdraw Checker Error: {e}")
+
 def run_automation():
-    logger.info("Automation Started...")
+    logger.info("Automation & Listener Started...")
+    last_review_check = datetime.now()
+    
     while True:
         try:
-            config = get_config()
-            apps = config.get('monitored_apps', [])
-            log_id = config.get('log_channel_id', OWNER_ID)
+            # ১. অ্যাপ/ওয়েব থেকে আসা রিকোয়েস্ট চেক করুন (প্রতি ১০ সেকেন্ডে)
+            check_new_submissions()
             
-            for app in apps:
-                try:
-                    # প্লে স্টোর থেকে লাস্ট ১০টি রিভিউ আনা
-                    reviews, _ = play_reviews(app['id'], count=10, sort=Sort.NEWEST)
-                    for r in reviews:
-                        rid = r['reviewId']
-                        r_date = r['at']
-                        if r_date < datetime.now() - timedelta(hours=48):
-                            continue
-                        
-                        # যদি রিভিউটি আগে চেক না করা হয়ে থাকে
-                        if not db.collection('seen_reviews').document(rid).get().exists:
-                            date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
-                            ai_txt = get_ai_summary(r['content'], r['score'])
+            # ২. প্লে-স্টোর রিভিউ চেক করুন (প্রতি ৫ মিনিটে)
+            if (datetime.now() - last_review_check).total_seconds() > 300:
+                config = get_config()
+                apps = config.get('monitored_apps', [])
+                log_id = config.get('log_channel_id', OWNER_ID)
+                
+                for app in apps:
+                    try:
+                        reviews, _ = play_reviews(app['id'], count=10, sort=Sort.NEWEST)
+                        for r in reviews:
+                            rid = r['reviewId']
+                            r_date = r['at']
+                            if r_date < datetime.now() - timedelta(hours=48): continue
                             
-                            # লগ গ্রুপে নোটিফিকেশন
-                            msg = (
-                                f"🔔 **Play Store Review Found**\n"
-                                f"📱 App: `{app['name']}`\n"
-                                f"👤 Name: **{r['userName']}**\n"
-                                f"📅 Date: `{date_str}`\n"
-                                f"⭐ Rating: {r['score']}/5\n"
-                                f"💬 Comment: {r['content']}\n"
-                                f"🤖 AI Mood: {ai_txt}"
-                            )
-                            send_telegram_message(msg, chat_id=log_id)
-                            db.collection('seen_reviews').document(rid).set({"t": datetime.now()})
+                            if not db.collection('seen_reviews').document(rid).get().exists:
+                                # ... (আগের রিভিউ লজিক অপরিবর্তিত থাকবে) ...
+                                date_str = r_date.strftime("%d-%m-%Y %I:%M %p")
+                                ai_txt = get_ai_summary(r['content'], r['score'])
+                                
+                                msg = f"🔔 **Play Store Review Found**\n📱 App: `{app['name']}`\n👤 Name: **{r['userName']}**\n⭐ {r['score']}/5\n💬 {r['content']}\nMood: {ai_txt}"
+                                send_telegram_message(msg, chat_id=log_id)
+                                db.collection('seen_reviews').document(rid).set({"t": datetime.now()})
 
-                            # অটো অ্যাপ্রুভাল লজিক (শুধুমাত্র ৫ স্টার হলে)
-                            if r['score'] == 5:
-                                # পেন্ডিং টাস্ক চেক করা
-                                p_tasks = db.collection('tasks').where('app_id', '==', app['id']).where('status', '==', 'pending').stream()
-                                for t in p_tasks:
-                                    td = t.to_dict()
-                                    # যদি টাস্কের নাম এবং রিভিউ নাম মিলে যায়
-                                    if td['review_name'].lower().strip() == r['userName'].lower().strip():
-                                        price = td.get('price', 0)
-                                        # টাস্ক এপ্রুভ করা
-                                        db.collection('tasks').document(t.id).update({"status": "approved", "approved_at": datetime.now()})
-                                        db.collection('users').document(str(td['user_id'])).update({
-                                            "balance": firestore.Increment(price),
-                                            "total_tasks": firestore.Increment(1)
-                                        })
-
-                                        send_telegram_message(
-                                            f"🤖 **Auto Approved!**\nUser: `{td['user_id']}`\nApp: {app['name']}\nName: {td['review_name']}", 
-                                            chat_id=log_id
-                                        )
-                                        send_telegram_message(
-                                            f"🎉 আপনার কাজটি **অটোমেটিক এপ্রুভ** হয়েছে! ৳{price:.2f} যোগ হয়েছে।", 
-                                            chat_id=td['user_id']
-                                        )
-                                        break
-                except Exception as e:
-                    pass # App error skip
+                                if r['score'] == 5:
+                                    p_tasks = db.collection('tasks').where('app_id', '==', app['id']).where('status', '==', 'pending').stream()
+                                    for t in p_tasks:
+                                        td = t.to_dict()
+                                        if td['review_name'].lower().strip() == r['userName'].lower().strip():
+                                            price = td.get('price', 0)
+                                            db.collection('tasks').document(t.id).update({"status": "approved", "approved_at": datetime.now()})
+                                            db.collection('users').document(str(td['user_id'])).update({
+                                                "balance": firestore.Increment(price),
+                                                "total_tasks": firestore.Increment(1)
+                                            })
+                                            send_telegram_message(f"🤖 **Auto Approved!**\nUser: `{td['user_id']}`", chat_id=log_id)
+                                            send_telegram_message(f"🎉 অটোমেটিক এপ্রুভ হয়েছে!", chat_id=td['user_id'])
+                                            break
+                    except Exception: pass
+                
+                last_review_check = datetime.now()
+                
         except Exception as e:
-            logger.error(f"Automation Loop Error: {e}")
-        time.sleep(300) # প্রতি ৫ মিনিটে চেক করবে
+            logger.error(f"Loop Error: {e}")
+            
+        time.sleep(10) # ১০ সেকেন্ড বিরতি (যাতে সার্ভারে লোড না পড়ে)
 
 def send_telegram_message(message, chat_id=None, reply_markup=None):
     if not chat_id: return
