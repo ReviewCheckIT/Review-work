@@ -9,6 +9,7 @@ import io
 import random
 import string
 from datetime import datetime, timedelta
+from collections import defaultdict # তারিখ অনুযায়ী ডাটা সাজানোর জন্য
 import requests
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -186,22 +187,24 @@ def create_user(user_id, first_name, referrer_id=None):
                 "name": first_name,
                 "balance": 0.0,
                 "total_tasks": 0,
+                "referral_count": 0, # [UPDATE] রেফার সংখ্যা ট্র্যাক করার জন্য
                 "joined_at": datetime.now(),
                 "referrer": referrer_id if referrer_id and referrer_id.isdigit() and str(referrer_id) != str(user_id) else None,
                 "is_blocked": False,
                 "is_admin": str(user_id) == str(OWNER_ID),
-                "web_password": "",  # For Web Login OTP
-                "device_id": ""      # For Device Lock
+                "web_password": "",  
+                "device_id": ""      
             }
             db.collection('users').document(str(user_id)).set(user_data)
             
-            # রেফার বোনাস সিস্টেম (অপশনাল, শুধু নতুন ইউজারদের জন্য)
+            # [UPDATE] রেফার বোনাস + কাউন্ট আপডেট
             if referrer_id and referrer_id.isdigit() and str(referrer_id) != str(user_id):
                  config = get_config()
                  bonus = config.get('referral_bonus', 0.0)
                  if bonus > 0:
                      db.collection('users').document(str(referrer_id)).update({
-                         "balance": firestore.Increment(bonus)
+                         "balance": firestore.Increment(bonus),
+                         "referral_count": firestore.Increment(1) # রেফারকারীর কাউন্ট বাড়ছে
                      })
         except: pass
 
@@ -325,7 +328,13 @@ async def common_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "my_profile":
             user = get_user(query.from_user.id)
             if user:
-                msg = f"👤 **প্রোফাইল**\n\n🆔 ID: `{user['id']}`\n💰 ব্যালেন্স: ৳{user['balance']:.2f}\n✅ সম্পন্ন টাস্ক: {user['total_tasks']}"
+                # [UPDATE] রেফার কাউন্ট দেখানো হচ্ছে
+                ref_count = user.get('referral_count', 0)
+                msg = (f"👤 **প্রোফাইল**\n\n"
+                       f"🆔 ID: `{user['id']}`\n"
+                       f"💰 ব্যালেন্স: ৳{user['balance']:.2f}\n"
+                       f"👥 মোট রেফার: {ref_count} জন\n"
+                       f"✅ সম্পন্ন টাস্ক: {user['total_tasks']}")
             else:
                 msg = "👤 **প্রোফাইল**\n\nডেটা লোড করা যায়নি। আবার /start দিন।"
             await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="back_home")]]))
@@ -824,28 +833,29 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(query.from_user.id): return
 
     kb = [
-        [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Bonus", callback_data="adm_finance")],
+        [InlineKeyboardButton("👥 Users & Balance", callback_data="adm_users"), InlineKeyboardButton("💰 Finance & Liability", callback_data="adm_finance")],
         [InlineKeyboardButton("📱 Apps Manage", callback_data="adm_apps"), InlineKeyboardButton("👮 Manage Admins", callback_data="adm_admins")],
         [InlineKeyboardButton("🎨 Buttons & Time", callback_data="adm_content"), InlineKeyboardButton("📢 Log Channel", callback_data="adm_log")],
-        [InlineKeyboardButton("📊 Reports & Export", callback_data="adm_reports")],
+        [InlineKeyboardButton("📊 Reports & Stats", callback_data="adm_reports")],
         [InlineKeyboardButton("🔙 Back to User Mode", callback_data="back_home")]
     ]
     await query.edit_message_text("⚙️ **Super Admin Panel**", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- Admin Reports & Exports (MODIFIED FOR BUYER) ---
+# --- Admin Reports & Exports (UPDATED FOR BUYER - APPROVED ONLY) ---
 async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
     config = get_config()
     apps = config.get('monitored_apps', [])
     
-    msg = "📊 **Select App for Report**\n\nBuyer এর জন্য রিপোর্ট ডাউনলোড করতে অ্যাপ সিলেক্ট করুন:"
+    msg = "📊 **Reports & Statistics**\n\nBuyer এর জন্য রিপোর্ট ডাউনলোড করতে অ্যাপ সিলেক্ট করুন (Only Approved Tasks)।\nঅথবা Daily Stats দেখুন।"
     kb = []
     
     # অ্যাপগুলোর বাটন ডাইনামিক্যালি তৈরি হচ্ছে
     for app in apps:
         kb.append([InlineKeyboardButton(f"📱 {app['name']}", callback_data=f"rep_select_app_{app['id']}")])
         
+    kb.append([InlineKeyboardButton("📊 Daily Approved Stats (Last 7 Days)", callback_data="adm_daily_stats")])
     kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
     await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -855,18 +865,18 @@ async def admin_report_timeframe(update: Update, context: ContextTypes.DEFAULT_T
     
     app_id = query.data.split('rep_select_app_')[1]
     
-    msg = "📅 **Select Timeframe**\n\nকোন সময়ের ডাটা লাগবে?"
+    msg = "📅 **Select Timeframe (Only Approved)**\n\nকোন সময়ের ডাটা লাগবে?"
     kb = [
         [InlineKeyboardButton("🕒 Last 24 Hours", callback_data=f"rep_gen_{app_id}_24h")],
         [InlineKeyboardButton("📅 Last 7 Days", callback_data=f"rep_gen_{app_id}_7d")],
-        [InlineKeyboardButton("📜 Total (All Time)", callback_data=f"rep_gen_{app_id}_total")],
+        [InlineKeyboardButton("📜 Total Approved (All Time)", callback_data=f"rep_gen_{app_id}_total")],
         [InlineKeyboardButton("🔙 Back", callback_data="adm_reports")]
     ]
     await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
 async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("Generating Buyer report...")
+    await query.answer("Generating Approved Report...")
     
     # Data Format: rep_gen_{app_id}_{period}
     data = query.data.split('_')
@@ -880,17 +890,13 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         cutoff_date = now - timedelta(hours=24)
     elif period == "7d":
         cutoff_date = now - timedelta(days=7)
-    # total এর জন্য cutoff_date None থাকবে
 
-    # শুধুমাত্র Approved টাস্ক ফিল্টার করা হচ্ছে
-    tasks_ref = db.collection('tasks').where('app_id', '==', app_id).stream()
+    # [UPDATE] Filter: ONLY APPROVED TASKS
+    tasks_ref = db.collection('tasks').where('app_id', '==', app_id).where('status', '==', 'approved').stream()
     data_rows = []
     
     for t in tasks_ref:
         t_data = t.to_dict()
-        
-        # আমরা চাই শুধু ভ্যালিড কাজ (Approved বা Pending, সাধারণত বায়ারকে দেওয়ার জন্য সব সাবমিশন দরকার হতে পারে, তবে এখানে Approved কাজগুলোই সাধারণত বায়ারকে দেওয়া হয়। 
-        # আপনি চাইলে নিচে 'pending' ও এড করতে পারেন। আমি বর্তমানে সব নিচ্ছি এবং টাইম ফিল্টার করছি।)
         
         # টাইম ফিল্টার
         sub_time = t_data.get('submitted_at')
@@ -904,37 +910,75 @@ async def export_report_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if cutoff_date and sub_time < cutoff_date:
             continue
 
-        # ডাটা সংগ্রহ (Review Name, Email, Device, Screenshot)
+        # ডাটা সংগ্রহ + [UPDATE] Date যোগ করা
         row = [
             t_data.get('review_name', 'N/A'),
             t_data.get('email', 'N/A'),
             t_data.get('device', 'N/A'),
-            t_data.get('screenshot', 'N/A')
+            t_data.get('screenshot', 'N/A'),
+            sub_time.strftime("%Y-%m-%d") # তারিখ যোগ করা হলো বায়ারের সুবিধার জন্য
         ]
         data_rows.append(row)
     
     if not data_rows:
-        await query.message.reply_text("❌ No data found for this period.")
+        await query.message.reply_text("❌ No APPROVED data found for this period.")
         return
 
     # CSV তৈরি
     output = io.StringIO()
     writer = csv.writer(output)
-    # বায়ারের জন্য হেডার
-    writer.writerow(["Review Name", "Email Address", "Device Name", "Screenshot Link"])
+    # [UPDATE] বায়ারের জন্য হেডার এবং ডেট যোগ
+    writer.writerow(["Review Name", "Email Address", "Device Name", "Screenshot Link", "Date"])
     writer.writerows(data_rows)
     output.seek(0)
     
-    filename = f"Report_{app_id}_{period}_{now.strftime('%Y%m%d')}.csv"
+    filename = f"Approved_Report_{app_id}_{period}_{now.strftime('%Y%m%d')}.csv"
     
     await context.bot.send_document(
         chat_id=query.from_user.id,
         document=io.BytesIO(output.getvalue().encode('utf-8')),
         filename=filename,
-        caption=f"📊 **Buyer Report Generated**\nApp: `{app_id}`\nPeriod: `{period}`\nTotal: {len(data_rows)}"
+        caption=f"📊 **Buyer Report (Approved Only)**\nApp: `{app_id}`\nPeriod: `{period}`\nTotal: {len(data_rows)}"
     )
 
-# --- Admin Sub Menus ---
+# [NEW] Daily Stats Handler
+async def admin_daily_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Fetching Stats...")
+    
+    # গত ৭ দিনের এপ্রুভ করা কাজের সংখ্যা
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=7)
+    
+    # যেহেতু Firestore এ GROUP BY নেই, তাই আমরা পাইথনে প্রসেস করব (Pending/Reject বাদ দিয়ে)
+    tasks = db.collection('tasks').where('status', '==', 'approved').stream()
+    
+    daily_counts = defaultdict(int)
+    
+    for t in tasks:
+        t_data = t.to_dict()
+        sub_time = t_data.get('approved_at', t_data.get('submitted_at')) # এপ্রুভ টাইম অথবা সাবমিট টাইম
+        if sub_time:
+            try:
+                dt = sub_time.replace(tzinfo=None)
+                if dt >= start_date:
+                    date_str = dt.strftime("%Y-%m-%d")
+                    daily_counts[date_str] += 1
+            except: pass
+
+    msg = "📊 **Daily Approved Stats (Last 7 Days)**\n\n"
+    sorted_dates = sorted(daily_counts.keys(), reverse=True)
+    
+    if not sorted_dates:
+        msg += "No approved tasks found in last 7 days."
+    else:
+        for d in sorted_dates:
+            msg += f"📅 `{d}` : **{daily_counts[d]}** tasks\n"
+            
+    kb = [[InlineKeyboardButton("🔙 Back", callback_data="adm_reports")]]
+    await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+# --- Admin Sub Menus (Updated for Finance) ---
 async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -946,9 +990,26 @@ async def admin_sub_handlers(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data == "adm_finance":
         config = get_config()
-        msg = f"💸 **Finance Config**\nRef Bonus: ৳{config['referral_bonus']}\nMin Withdraw: ৳{config['min_withdraw']}"
+        
+        # [UPDATE] TOTAL LIABILITY CALCULATION
+        await query.message.reply_text("⏳ Calculating Total Liability... Please wait.")
+        try:
+            users = db.collection('users').stream()
+            total_liability = sum(u.to_dict().get('balance', 0.0) for u in users)
+        except:
+            total_liability = 0.0
+            
+        msg = (
+            f"💸 **Finance Dashboard**\n\n"
+            f"💰 **Total User Balance (Liability):** ৳{total_liability:.2f}\n"
+            f"(বেতন দিতে হাতে এই পরিমাণ টাকা রাখা লাগবে)\n\n"
+            f"🔧 Ref Bonus: ৳{config['referral_bonus']}\n"
+            f"🔧 Min Withdraw: ৳{config['min_withdraw']}"
+        )
         kb = [[InlineKeyboardButton("✏️ Change Ref Bonus", callback_data="ed_txt_referral_bonus")], [InlineKeyboardButton("🔙 Admin Home", callback_data="admin_panel")]]
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+        # আগের মেসেজ ডিলিট করে নতুনটা দেওয়া (loading text সরানোর জন্য)
+        await query.message.delete()
+        await context.bot.send_message(chat_id=query.from_user.id, text=msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
         
     elif data == "adm_apps":
         config = get_config()
@@ -1036,7 +1097,14 @@ async def find_user_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("User Not Found.")
         return ConversationHandler.END
     context.user_data['mng_uid'] = uid
-    msg = f"User: {user.get('name')}\nBal: {user.get('balance')}\nStatus: {'Blocked' if user.get('is_blocked') else 'Active'}"
+    
+    # [UPDATE] ইউজার ইনফোতে রেফারেল কাউন্ট দেখানো
+    ref_count = user.get('referral_count', 0)
+    msg = (f"User: {user.get('name')}\n"
+           f"Bal: ৳{user.get('balance'):.2f}\n"
+           f"Total Referrals: {ref_count}\n"
+           f"Status: {'Blocked' if user.get('is_blocked') else 'Active'}")
+           
     kb = [[InlineKeyboardButton("➕ Add Bal", callback_data="u_add_bal"), InlineKeyboardButton("➖ Cut Bal", callback_data="u_cut_bal")],
           [InlineKeyboardButton("⛔ Block/Unblock", callback_data="u_toggle_block")], [InlineKeyboardButton("🔙 Cancel", callback_data="cancel")]]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb))
@@ -1205,6 +1273,8 @@ def main():
     application.add_handler(CallbackQueryHandler(admin_reports_menu, pattern="^adm_reports$"))
     application.add_handler(CallbackQueryHandler(admin_report_timeframe, pattern="^rep_select_app_"))
     application.add_handler(CallbackQueryHandler(export_report_data, pattern="^rep_gen_"))
+    # [NEW] Daily Stats Handler
+    application.add_handler(CallbackQueryHandler(admin_daily_stats, pattern="^adm_daily_stats$"))
     # -------------------------------
 
     application.add_handler(CallbackQueryHandler(edit_buttons_menu, pattern="^ed_btns$"))
