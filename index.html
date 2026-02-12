@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>WorkBot Secure App</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            background-color: #0f172a; 
+            color: #e2e8f0; 
+            font-family: 'Inter', sans-serif; 
+            -webkit-tap-highlight-color: transparent; 
+            user-select: none;
+        }
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        .bottom-nav-item { transition: all 0.3s ease; }
+        .bottom-nav-item.active { color: #3b82f6; transform: translateY(-5px); }
+        .hidden { display: none !important; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Loading Spinner */
+        .loader { border: 3px solid rgba(255,255,255,0.1); border-radius: 50%; border-top: 3px solid #3b82f6; width: 20px; height: 20px; animation: spin 0.8s linear infinite; display: inline-block; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="h-screen w-screen overflow-hidden flex flex-col">
+
+    <!-- 1. LOGIN SCREEN -->
+    <div id="login-screen" class="absolute inset-0 z-50 bg-slate-900 flex flex-col justify-center items-center p-6">
+        <div class="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm border border-slate-700 relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-600"></div>
+            <div class="text-center mb-8">
+                <div class="w-16 h-16 bg-slate-700 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl shadow-lg border border-slate-600">
+                    <i class="fa-solid fa-robot text-blue-500"></i>
+                </div>
+                <h1 class="text-3xl font-bold text-white tracking-tight">Work<span class="text-blue-500">Bot</span></h1>
+                <p class="text-xs text-gray-400 mt-1">Secure Earning Platform</p>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label class="text-xs text-gray-400 ml-1">Telegram User ID</label>
+                    <div class="relative">
+                        <i class="fa-solid fa-id-badge absolute left-3 top-3.5 text-gray-500"></i>
+                        <input type="number" id="login-uid" placeholder="Example: 12345678" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pl-10 text-white focus:outline-none focus:border-blue-500 transition">
+                    </div>
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400 ml-1">OTP Code</label>
+                    <div class="relative">
+                        <i class="fa-solid fa-key absolute left-3 top-3.5 text-gray-500"></i>
+                        <input type="number" id="login-pass" placeholder="Get from bot /login" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pl-10 text-white focus:outline-none focus:border-blue-500 transition">
+                    </div>
+                </div>
+                <button onclick="authLogin()" id="btn-login" class="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold py-3.5 rounded-lg shadow-lg transition active:scale-95 flex justify-center items-center gap-2">
+                    <span>লগইন করুন</span>
+                </button>
+            </div>
+            <div class="mt-6 text-center bg-slate-900/50 p-3 rounded-lg border border-slate-700/50">
+                <p class="text-xs text-gray-400"><i class="fa-brands fa-telegram text-blue-400"></i> টেলিগ্রাম বটে যান এবং <span class="text-white font-mono bg-slate-700 px-1 rounded">/login</span> কমান্ড দিন।</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. MAIN APP SCREEN -->
+    <div id="app-screen" class="flex-1 flex flex-col hidden relative bg-slate-900">
+        
+        <!-- Header -->
+        <header class="bg-slate-800/80 backdrop-blur-md px-5 py-3 flex justify-between items-center shadow-lg border-b border-slate-700 z-20">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold shadow-md border border-white/10">
+                    <i class="fa-solid fa-user"></i>
+                </div>
+                <div>
+                    <h2 id="user-name" class="font-bold text-white text-sm leading-tight">Loading...</h2>
+                    <p class="text-[10px] text-gray-400 font-mono">ID: <span id="user-id-disp">...</span></p>
+                </div>
+            </div>
+            <div class="text-right bg-slate-900/50 px-3 py-1.5 rounded-lg border border-slate-700/50">
+                <p class="text-[10px] text-gray-400 uppercase font-semibold">Balance</p>
+                <h3 class="text-lg font-bold text-emerald-400">৳<span id="user-balance">0.00</span></h3>
+            </div>
+        </header>
+
+        <!-- Main Content (Scrollable) -->
+        <main id="main-content" class="flex-1 overflow-y-auto p-4 pb-24 scroll-smooth">
+            
+            <!-- VIEW: HOME -->
+            <div id="view-home" class="view-section fade-in">
+                <!-- Status Card -->
+                <div class="bg-slate-800 border-l-4 border-blue-500 p-4 rounded-r-xl mb-5 shadow-md flex items-center justify-between">
+                    <div>
+                        <p class="text-xs text-gray-400 uppercase font-bold tracking-wider"><i class="fa-regular fa-clock"></i> Working Hours</p>
+                        <p id="work-time-display" class="text-sm font-semibold text-white mt-1">Loading...</p>
+                    </div>
+                    <div id="work-status-badge" class="px-3 py-1 rounded-full text-[10px] font-bold bg-slate-700 text-gray-300 uppercase tracking-wide border border-slate-600">Checking...</div>
+                </div>
+
+                <!-- Admin Access Button (Home Page) -->
+                <button id="btn-admin-home" onclick="navTo('view-admin')" class="hidden w-full bg-gradient-to-r from-red-600 to-orange-600 text-white p-3 rounded-xl mb-5 font-bold shadow-lg shadow-red-900/20 border border-red-500/30 flex items-center justify-center gap-2 active:scale-95 transition">
+                    <i class="fa-solid fa-shield-halved"></i> <span>এডমিন প্যানেল</span>
+                </button>
+
+                <!-- Referral Card (Home Page) -->
+                <div class="bg-gradient-to-br from-indigo-600 to-purple-700 p-5 rounded-2xl mb-6 shadow-xl relative overflow-hidden">
+                    <div class="absolute -right-4 -top-4 w-24 h-24 bg-white/10 rounded-full blur-2xl"></div>
+                    <h3 class="font-bold text-lg mb-1 text-white flex items-center gap-2"><i class="fa-solid fa-gift"></i> Refer & Earn</h3>
+                    <p class="text-xs text-indigo-100 mb-3 opacity-80">বন্ধুদের ইনভাইট করুন এবং বোনাস জিতুন!</p>
+                    <div class="flex bg-black/30 rounded-lg p-1.5 backdrop-blur-sm border border-white/10">
+                        <input id="ref-link-home" readonly class="bg-transparent w-full text-xs text-white px-2 outline-none font-mono" value="...">
+                        <button onclick="copyRef('ref-link-home')" class="text-white bg-white/20 hover:bg-white/30 px-3 py-1 rounded transition"><i class="fa-regular fa-copy"></i></button>
+                    </div>
+                </div>
+
+                <!-- Action Grid -->
+                <div class="grid grid-cols-2 gap-4 mb-6">
+                    <button onclick="navTo('view-tasks')" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 p-4 rounded-xl flex flex-col items-center gap-2 active:scale-95 transition group">
+                        <div class="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center group-hover:bg-blue-500/20 transition">
+                            <i class="fa-solid fa-list-check text-2xl text-blue-500"></i>
+                        </div>
+                        <span class="font-semibold text-sm text-gray-200">Start Task</span>
+                    </button>
+                    <button onclick="navTo('view-withdraw')" class="bg-slate-800 hover:bg-slate-750 border border-slate-700 p-4 rounded-xl flex flex-col items-center gap-2 active:scale-95 transition group">
+                        <div class="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center group-hover:bg-emerald-500/20 transition">
+                            <i class="fa-solid fa-money-bill-transfer text-2xl text-emerald-500"></i>
+                        </div>
+                        <span class="font-semibold text-sm text-gray-200">Withdraw</span>
+                    </button>
+                </div>
+
+                <div class="flex justify-between items-end mb-3 border-b border-slate-700 pb-2">
+                    <h3 class="font-bold text-md text-slate-300">Recent Activity</h3>
+                    <span class="text-[10px] text-gray-500">Last 10 tasks</span>
+                </div>
+                <!-- HISTORY LIST -->
+                <div id="home-history-list" class="space-y-3 pb-4">
+                    <div class="text-center text-gray-500 text-xs py-4">Checking history...</div>
+                </div>
+            </div>
+
+            <!-- VIEW: TASKS -->
+            <div id="view-tasks" class="view-section hidden fade-in">
+                <h2 class="text-xl font-bold mb-5 flex items-center gap-2"><i class="fa-solid fa-pen-to-square text-blue-500"></i> Submit Task</h2>
+                <form id="task-form" onsubmit="submitTask(event)" class="space-y-4">
+                    
+                    <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-4 shadow-lg">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1 ml-1 font-bold">SELECT APP</label>
+                            <div class="relative">
+                                <i class="fa-brands fa-google-play absolute left-3 top-3.5 text-gray-500"></i>
+                                <select id="task-app-select" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pl-10 text-white outline-none appearance-none focus:border-blue-500 transition">
+                                    <option>Loading apps...</option>
+                                </select>
+                                <i class="fa-solid fa-chevron-down absolute right-3 top-4 text-gray-500 text-xs"></i>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1 ml-1">Review Name (প্লে স্টোর নাম)</label>
+                            <input type="text" id="task-rname" required placeholder="Ex: Rakib Hasan" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1 ml-1">Email Address</label>
+                            <input type="email" id="task-email" required placeholder="Ex: example@gmail.com" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1 ml-1">Device Name</label>
+                            <input type="text" id="task-device" required placeholder="Ex: Redmi Note 10" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 outline-none">
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
+                        <label class="block text-xs text-gray-400 mb-2 font-bold">PROOF SCREENSHOT</label>
+                        <div class="border-2 border-dashed border-slate-600 rounded-lg p-4 text-center hover:bg-slate-750 transition relative">
+                            <input type="file" id="task-file" accept="image/*" required class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onchange="previewImage(this)">
+                            <div id="upload-placeholder">
+                                <i class="fa-solid fa-cloud-arrow-up text-3xl text-gray-500 mb-2"></i>
+                                <p class="text-xs text-gray-400">Click to Upload Image</p>
+                            </div>
+                            <img id="img-preview" class="hidden max-h-40 mx-auto rounded-lg shadow-md">
+                        </div>
+                    </div>
+
+                    <button type="submit" id="btn-submit-task" class="w-full bg-blue-600 hover:bg-blue-500 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-900/30 transition active:scale-95">
+                        কাজ জমা দিন
+                    </button>
+                </form>
+            </div>
+
+            <!-- VIEW: WITHDRAW -->
+            <div id="view-withdraw" class="view-section hidden fade-in">
+                <h2 class="text-xl font-bold mb-5 flex items-center gap-2"><i class="fa-solid fa-wallet text-emerald-500"></i> Withdraw Money</h2>
+                
+                <div class="bg-gradient-to-r from-emerald-600 to-teal-600 p-6 rounded-2xl mb-6 shadow-lg text-center border border-emerald-500/30">
+                    <p class="text-xs text-emerald-100 uppercase tracking-widest mb-1">Available Balance</p>
+                    <h3 class="text-4xl font-bold text-white drop-shadow-md">৳<span id="wd-avail-bal">0.00</span></h3>
+                </div>
+
+                <form id="wd-form" onsubmit="requestWithdraw(event)" class="space-y-4 bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1 ml-1">Payment Method</label>
+                        <div class="grid grid-cols-2 gap-3">
+                            <label class="cursor-pointer">
+                                <input type="radio" name="wd-method" value="Bkash" checked class="peer sr-only">
+                                <div class="bg-slate-900 border border-slate-600 rounded-lg p-3 text-center peer-checked:border-pink-500 peer-checked:bg-pink-500/10 peer-checked:text-pink-500 transition">
+                                    <span class="font-bold">bKash</span>
+                                </div>
+                            </label>
+                            <label class="cursor-pointer">
+                                <input type="radio" name="wd-method" value="Nagad" class="peer sr-only">
+                                <div class="bg-slate-900 border border-slate-600 rounded-lg p-3 text-center peer-checked:border-orange-500 peer-checked:bg-orange-500/10 peer-checked:text-orange-500 transition">
+                                    <span class="font-bold">Nagad</span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1 ml-1">Wallet Number</label>
+                        <input type="number" id="wd-number" required placeholder="017xxxxxxxx" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-emerald-500 outline-none font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1 ml-1">Amount (Min: <span id="min-wd-txt" class="text-emerald-400">50</span>)</label>
+                        <input type="number" id="wd-amount" required placeholder="0.00" class="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-emerald-500 outline-none font-bold text-lg">
+                    </div>
+                    <button type="submit" id="btn-wd" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-4 rounded-xl font-bold shadow-lg shadow-emerald-900/30 transition active:scale-95 mt-2">
+                        উইথড্র করুন
+                    </button>
+                </form>
+            </div>
+
+            <!-- VIEW: ADMIN PANEL (Protected) -->
+            <div id="view-admin" class="view-section hidden fade-in pb-20">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-bold text-red-400 flex items-center gap-2"><i class="fa-solid fa-user-shield"></i> Admin Panel</h2>
+                    <button onclick="navTo('view-home')" class="text-xs bg-slate-800 px-3 py-1 rounded border border-slate-700">Exit</button>
+                </div>
+                
+                <div class="space-y-8">
+                    <!-- Tasks Section -->
+                    <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                        <div class="bg-slate-750 px-4 py-3 border-b border-slate-700 flex justify-between items-center">
+                            <h3 class="font-bold text-sm text-blue-400">📝 Pending Tasks</h3>
+                            <span id="adm-task-count" class="bg-blue-500/20 text-blue-400 text-[10px] px-2 py-0.5 rounded-full font-bold">0</span>
+                        </div>
+                        <div id="admin-task-list" class="p-4 space-y-4 max-h-96 overflow-y-auto">
+                            <!-- JS Injected Items -->
+                            <p class="text-center text-gray-500 text-xs">No pending tasks</p>
+                        </div>
+                    </div>
+
+                    <!-- Withdrawals Section -->
+                    <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                        <div class="bg-slate-750 px-4 py-3 border-b border-slate-700 flex justify-between items-center">
+                            <h3 class="font-bold text-sm text-emerald-400">💸 Pending Withdrawals</h3>
+                            <span id="adm-wd-count" class="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold">0</span>
+                        </div>
+                        <div id="admin-withdrawal-list" class="p-4 space-y-4 max-h-96 overflow-y-auto">
+                            <!-- JS Injected Items -->
+                            <p class="text-center text-gray-500 text-xs">No pending withdrawals</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW: PROFILE (UPDATED) -->
+            <div id="view-profile" class="view-section hidden fade-in">
+                <h2 class="text-xl font-bold mb-6">My Profile</h2>
+                
+                <div class="bg-slate-800 rounded-2xl p-6 mb-6 border border-slate-700 text-center relative overflow-hidden">
+                    <div class="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-purple-500"></div>
+                    <div class="w-20 h-20 bg-slate-700 rounded-full mx-auto mb-3 flex items-center justify-center text-3xl text-gray-400 border-4 border-slate-600">
+                        <i class="fa-solid fa-user"></i>
+                    </div>
+                    <h3 id="p-name" class="text-xl font-bold text-white">...</h3>
+                    <p class="text-sm text-gray-400 font-mono bg-slate-900/50 inline-block px-3 py-1 rounded-full mt-1">ID: <span id="p-uid">...</span></p>
+                    
+                    <!-- NEW STATS GRID -->
+                    <div class="grid grid-cols-3 gap-2 mt-6">
+                        <div class="bg-slate-900 p-2 rounded-lg border border-slate-700">
+                            <p class="text-[10px] text-green-400 uppercase font-bold">Approved</p>
+                            <p id="stat-approved" class="text-lg font-bold text-white">0</p>
+                        </div>
+                        <div class="bg-slate-900 p-2 rounded-lg border border-slate-700">
+                            <p class="text-[10px] text-yellow-400 uppercase font-bold">Pending</p>
+                            <p id="stat-pending" class="text-lg font-bold text-white">0</p>
+                        </div>
+                        <div class="bg-slate-900 p-2 rounded-lg border border-slate-700">
+                            <p class="text-[10px] text-red-400 uppercase font-bold">Rejected</p>
+                            <p id="stat-rejected" class="text-lg font-bold text-white">0</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Access Button (Profile Page) -->
+                <button id="btn-admin-profile" onclick="navTo('view-admin')" class="hidden w-full bg-slate-800 border border-slate-700 hover:bg-slate-750 text-white p-4 rounded-xl mb-4 font-bold flex items-center justify-between group">
+                    <span class="flex items-center gap-3"><i class="fa-solid fa-shield-halved text-red-400"></i> Admin Panel</span>
+                    <i class="fa-solid fa-chevron-right text-gray-500 group-hover:translate-x-1 transition"></i>
+                </button>
+
+                <!-- Referral Section (Profile Page) -->
+                <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 mb-4">
+                    <p class="text-xs text-gray-400 mb-2 font-bold uppercase"><i class="fa-solid fa-share-nodes"></i> My Referral Link</p>
+                    <div class="flex bg-slate-900 rounded-lg p-2 border border-slate-600">
+                        <input id="ref-link-profile" readonly class="bg-transparent w-full text-xs text-white px-1 outline-none font-mono" value="...">
+                        <button onclick="copyRef('ref-link-profile')" class="text-blue-400 hover:text-white px-2"><i class="fa-regular fa-copy"></i></button>
+                    </div>
+                </div>
+
+                <div class="bg-slate-800 rounded-xl overflow-hidden border border-slate-700 mb-6">
+                    <button class="w-full text-left px-5 py-4 border-b border-slate-700 flex justify-between items-center hover:bg-slate-750" onclick="window.open('https://t.me/ReviewWorkIT_bot', '_blank')">
+                        <span class="text-sm"><i class="fa-brands fa-telegram text-blue-400 w-6"></i> Help & Support</span>
+                        <i class="fa-solid fa-chevron-right text-xs text-gray-500"></i>
+                    </button>
+                    <button class="w-full text-left px-5 py-4 border-b border-slate-700 flex justify-between items-center hover:bg-slate-750" onclick="alert('Version: 2.1 (Secure)')">
+                        <span class="text-sm"><i class="fa-solid fa-circle-info text-gray-400 w-6"></i> App Info</span>
+                        <i class="fa-solid fa-chevron-right text-xs text-gray-500"></i>
+                    </button>
+                </div>
+
+                <button onclick="logout()" class="w-full bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/30 py-4 rounded-xl font-bold flex items-center justify-center gap-2 transition">
+                    <i class="fa-solid fa-right-from-bracket"></i> Logout
+                </button>
+            </div>
+
+        </main>
+
+        <!-- Bottom Navigation -->
+        <nav class="bg-slate-800 border-t border-slate-700 h-[70px] flex justify-around items-center absolute bottom-0 w-full z-30 pb-2 shadow-[0_-5px_10px_rgba(0,0,0,0.2)]">
+            <button onclick="navTo('view-home')" class="bottom-nav-item active flex flex-col items-center w-1/4 text-blue-500 pt-2">
+                <i class="fa-solid fa-house text-xl mb-1"></i>
+                <span class="text-[10px] font-medium">Home</span>
+            </button>
+            <button onclick="navTo('view-tasks')" class="bottom-nav-item flex flex-col items-center w-1/4 text-gray-400 pt-2 hover:text-gray-200">
+                <i class="fa-solid fa-list-check text-xl mb-1"></i>
+                <span class="text-[10px] font-medium">Task</span>
+            </button>
+            <button onclick="navTo('view-withdraw')" class="bottom-nav-item flex flex-col items-center w-1/4 text-gray-400 pt-2 hover:text-gray-200">
+                <i class="fa-solid fa-wallet text-xl mb-1"></i>
+                <span class="text-[10px] font-medium">Wallet</span>
+            </button>
+            <button onclick="navTo('view-profile')" class="bottom-nav-item flex flex-col items-center w-1/4 text-gray-400 pt-2 hover:text-gray-200">
+                <i class="fa-solid fa-user text-xl mb-1"></i>
+                <span class="text-[10px] font-medium">Profile</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="fixed top-5 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl border border-slate-600 flex items-center gap-3 z-50 transition-all duration-300 opacity-0 translate-y-[-20px] pointer-events-none">
+        <i id="toast-icon" class="fa-solid fa-circle-check text-green-500"></i>
+        <span id="toast-msg" class="text-sm font-semibold">Message</span>
+    </div>
+
+    <!-- Firebase & Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        import { getFirestore, doc, getDoc, setDoc, collection, query, where, onSnapshot, addDoc, updateDoc, runTransaction, Timestamp, increment, getDocs, orderBy, limit } 
+        from "https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js";
+
+        // ⚠️⚠️ আপনার ফায়ারবেস কনফিগারেশন নিচে বসান ⚠️⚠️
+        const firebaseConfig = {
+            apiKey: "AIzaSyBLgVkdHrlrJ1rIJh-4uM_EmgbdULaGhgQ", // উদাহরণ: AIzaSy...
+            authDomain: "review-work-d4080.firebaseapp.com",
+            projectId: "review-work-d4080",
+            storageBucket: "review-work-d4080.firebasestorage.app",
+            messagingSenderId: "921088406778",
+            appId: "1:921088406778:web:366c7113ba92cfbc848543"
+        };
+
+        // ⚠️⚠️ আপনার ImgBB API Key বসান ⚠️⚠️
+        const IMGBB_KEY = "965b7883e7bd6764b8b20cfd3f236614"; 
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // Global State
+        let currentUser = null;
+        let configData = null;
+        let myDeviceID = localStorage.getItem('tbot_device_id') || Math.random().toString(36).substring(2) + Date.now().toString(36);
+
+        // --- INIT & AUTH ---
+        async function init() {
+            const uid = localStorage.getItem('tbot_uid');
+            if(uid) {
+                // Check stored session validity before showing app
+                try {
+                    const snap = await getDoc(doc(db, "users", uid));
+                    if(snap.exists() && snap.data().device_id === myDeviceID) {
+                        showApp(uid);
+                    } else {
+                        logout("সেশন এক্সপায়ার হয়েছে (অন্য ডিভাইসে লগইন)।");
+                    }
+                } catch(e) { console.log("Connection check failed"); }
+            }
+            loadConfig();
+        }
+
+        window.authLogin = async () => {
+            const uid = document.getElementById('login-uid').value.trim();
+            const pass = document.getElementById('login-pass').value.trim();
+            if(!uid || !pass) return showToast("আইডি এবং কোড দিন!", "error");
+            
+            const btn = document.getElementById('btn-login');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = `<span class="loader"></span> যাচাই হচ্ছে...`;
+            btn.disabled = true;
+
+            try {
+                const userRef = doc(db, "users", uid);
+                const snap = await getDoc(userRef);
+                
+                if(snap.exists()) {
+                    const data = snap.data();
+                    if(data.is_blocked) throw "আপনার একাউন্ট ব্লক করা হয়েছে!";
+                    if(data.web_password === pass) {
+                        // Success: Lock Device
+                        localStorage.setItem('tbot_uid', uid);
+                        localStorage.setItem('tbot_device_id', myDeviceID);
+                        
+                        await updateDoc(userRef, { device_id: myDeviceID });
+                        showToast("সফলভাবে লগইন হয়েছে!", "success");
+                        setTimeout(() => showApp(uid), 1000);
+                    } else throw "ভুল কোড! /login কমান্ড দিয়ে নতুন কোড নিন।";
+                } else throw "আইডি পাওয়া যায়নি। আগে বটে /start দিন।";
+            } catch(e) { 
+                showToast(typeof e === 'string' ? e : "নেটওয়ার্ক সমস্যা!", "error");
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        };
+
+        function showApp(uid) {
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('app-screen').classList.remove('hidden');
+            
+            // Listen to User Data
+            onSnapshot(doc(db, "users", uid), (d) => {
+                if(d.exists()) {
+                    const u = d.data();
+                    // Security Check
+                    if(u.device_id && u.device_id !== myDeviceID) {
+                        logout("অন্য ডিভাইসে লগইন ডিটেক্ট হয়েছে!");
+                        return;
+                    }
+
+                    currentUser = u;
+                    updateUI(u);
+                    
+                    if(u.is_admin) {
+                        // Show Admin Button on both Home and Profile
+                        document.getElementById('btn-admin-home').classList.remove('hidden');
+                        document.getElementById('btn-admin-profile').classList.remove('hidden');
+                        setupAdminListeners();
+                    }
+                }
+            });
+            loadHistory(uid);
+            loadUserStats(uid);
+        }
+
+        function updateUI(u) {
+            document.getElementById('user-name').innerText = u.name.split(" ")[0]; // First name
+            document.getElementById('user-id-disp').innerText = u.id;
+            document.getElementById('user-balance').innerText = u.balance.toFixed(2);
+            document.getElementById('wd-avail-bal').innerText = u.balance.toFixed(2);
+            document.getElementById('p-name').innerText = u.name;
+            document.getElementById('p-uid').innerText = u.id;
+            
+            // Set Referral Links (Both locations)
+            const refLink = `https://t.me/ReviewWorkIT_bot?start=${u.id}`;
+            document.getElementById('ref-link-home').value = refLink;
+            document.getElementById('ref-link-profile').value = refLink;
+        }
+
+        async function loadConfig() {
+            onSnapshot(doc(db, "settings", "main_config"), (snap) => {
+                if(snap.exists()) {
+                    configData = snap.data();
+                    document.getElementById('min-wd-txt').innerText = configData.min_withdraw || 50;
+                    checkWorkingHours();
+                    loadTaskApps();
+                }
+            });
+        }
+
+        // --- FEATURES ---
+
+        function checkWorkingHours() {
+            if(!configData) return;
+            const start = configData.work_start_time || "10:00";
+            const end = configData.work_end_time || "22:00";
+            document.getElementById('work-time-display').innerText = `${convertTo12Hour(start)} - ${convertTo12Hour(end)}`;
+            
+            const now = new Date();
+            const bdTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Dhaka"}));
+            const cur = bdTime.getHours() * 60 + bdTime.getMinutes();
+            const [sH, sM] = start.split(':').map(Number);
+            const [eH, eM] = end.split(':').map(Number);
+            
+            // Logic for crossing midnight
+            let isOpen = false;
+            if (sH < eH) {
+                isOpen = (cur >= (sH*60+sM) && cur <= (eH*60+eM));
+            } else {
+                isOpen = (cur >= (sH*60+sM) || cur <= (eH*60+eM));
+            }
+
+            const badge = document.getElementById('work-status-badge');
+            if(isOpen) {
+                badge.innerText = "OPEN";
+                badge.className = "px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+            } else {
+                badge.innerText = "CLOSED";
+                badge.className = "px-3 py-1 rounded-full text-[10px] font-bold bg-red-500/20 text-red-400 border border-red-500/30";
+            }
+        }
+
+        async function loadTaskApps() {
+            const sel = document.getElementById('task-app-select');
+            if(!configData?.monitored_apps) return;
+            sel.innerHTML = "<option value=''>সিলেক্ট অ্যাপ...</option>";
+            
+            for(const app of configData.monitored_apps) {
+                // Get count for limits
+                const q = query(collection(db, "tasks"), where("app_id", "==", app.id));
+                const snap = await getDocs(q);
+                const count = snap.docs.filter(d => d.data().status !== 'rejected').length;
+                
+                const opt = document.createElement('option');
+                opt.value = app.id;
+                opt.text = `${app.name} (${count}/${app.limit})`;
+                if(count >= app.limit) opt.disabled = true;
+                sel.appendChild(opt);
+            }
+        }
+
+        window.submitTask = async (e) => {
+            e.preventDefault();
+            
+            // working hour check again
+            const badge = document.getElementById('work-status-badge').innerText;
+            if(badge === "CLOSED") return showToast("এখন কাজের সময় নয়!", "error");
+
+            const btn = document.getElementById('btn-submit-task');
+            const fileInput = document.getElementById('task-file');
+            
+            if(fileInput.files.length === 0) return showToast("স্ক্রিনশট দিতে হবে!", "error");
+            if(!document.getElementById('task-app-select').value) return showToast("অ্যাপ সিলেক্ট করুন!", "error");
+
+            btn.innerHTML = `<span class="loader"></span> আপলোড হচ্ছে...`;
+            btn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append("image", fileInput.files[0]);
+                
+                // ImgBB Upload
+                const res = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_KEY}`, { method: "POST", body: formData });
+                const data = await res.json();
+                
+                if(!data.success) throw "ছবি আপলোড ব্যর্থ হয়েছে।";
+
+                // Save to Firestore
+                await addDoc(collection(db, "tasks"), {
+                    user_id: currentUser.id,
+                    app_id: document.getElementById('task-app-select').value,
+                    review_name: document.getElementById('task-rname').value,
+                    email: document.getElementById('task-email').value,
+                    device: document.getElementById('task-device').value,
+                    screenshot: data.data.url,
+                    status: "pending",
+                    submitted_at: Timestamp.now(),
+                    price: configData.task_price || 20
+                });
+
+                showToast("কাজ জমা হয়েছে! এডমিন চেক করবে।", "success");
+                e.target.reset();
+                document.getElementById('img-preview').classList.add('hidden');
+                document.getElementById('upload-placeholder').classList.remove('hidden');
+                navTo('view-home');
+
+            } catch(e) {
+                showToast(typeof e === 'string' ? e : "এরর হয়েছে!", "error");
+            }
+            btn.innerHTML = "কাজ জমা দিন";
+            btn.disabled = false;
+        };
+
+        window.requestWithdraw = async (e) => {
+            e.preventDefault();
+            const amount = parseFloat(document.getElementById('wd-amount').value);
+            const min = configData.min_withdraw || 50;
+
+            if(amount < min) return showToast(`মিনিমাম উইথড্র ${min} টাকা`, "error");
+            if(amount > currentUser.balance) return showToast("পর্যাপ্ত ব্যালেন্স নেই!", "error");
+
+            const btn = document.getElementById('btn-wd');
+            btn.innerHTML = `<span class="loader"></span> প্রসেসিং...`;
+            btn.disabled = true;
+
+            try {
+                await runTransaction(db, async (txn) => {
+                    const userRef = doc(db, "users", currentUser.id);
+                    const userSnap = await txn.get(userRef);
+                    if(userSnap.data().balance < amount) throw "ব্যালেন্স শেষ হয়ে গেছে!";
+
+                    txn.update(userRef, { balance: increment(-amount) });
+                    const newWdRef = doc(collection(db, "withdrawals"));
+                    txn.set(newWdRef, {
+                        user_id: currentUser.id,
+                        user_name: currentUser.name,
+                        amount: amount,
+                        method: document.querySelector('input[name="wd-method"]:checked').value,
+                        number: document.getElementById('wd-number').value,
+                        status: "pending",
+                        time: Timestamp.now()
+                    });
+                });
+                showToast("রিকোয়েস্ট সফল হয়েছে!", "success");
+                e.target.reset();
+                navTo('view-home');
+            } catch(e) { showToast(e, "error"); }
+            btn.innerHTML = "উইথড্র করুন";
+            btn.disabled = false;
+        };
+
+        // --- ADMIN PANEL LOGIC ---
+        function setupAdminListeners() {
+            // Pending Tasks Listener
+            onSnapshot(query(collection(db, "tasks"), where("status", "==", "pending")), (snap) => {
+                const list = document.getElementById('admin-task-list');
+                document.getElementById('adm-task-count').innerText = snap.size;
+                list.innerHTML = snap.empty ? `<p class="text-center text-gray-500 text-xs">No pending tasks</p>` : "";
+                
+                snap.forEach(d => {
+                    const t = d.data();
+                    const el = document.createElement('div');
+                    el.className = "bg-slate-900 p-3 rounded-lg border border-slate-700 text-xs flex flex-col gap-2";
+                    el.innerHTML = `
+                        <div class="flex justify-between font-bold text-gray-300"><span>${t.app_id}</span><span>৳${t.price}</span></div>
+                        <div class="text-gray-400">User: ${t.user_id} <br> Name: ${t.review_name}</div>
+                        <a href="${t.screenshot}" target="_blank" class="text-blue-400 underline truncate"><i class="fa-regular fa-image"></i> Proof Link</a>
+                        <div class="flex gap-2 mt-1">
+                            <button onclick="window.admTask('${d.id}', '${t.user_id}', ${t.price}, 'approve')" class="flex-1 bg-green-600 py-1.5 rounded text-white font-bold hover:bg-green-500">Approve</button>
+                            <button onclick="window.admTask('${d.id}', '${t.user_id}', 0, 'reject')" class="flex-1 bg-red-600 py-1.5 rounded text-white font-bold hover:bg-red-500">Reject</button>
+                        </div>
+                    `;
+                    list.appendChild(el);
+                });
+            });
+
+            // Pending Withdrawals Listener
+            onSnapshot(query(collection(db, "withdrawals"), where("status", "==", "pending")), (snap) => {
+                const list = document.getElementById('admin-withdrawal-list');
+                document.getElementById('adm-wd-count').innerText = snap.size;
+                list.innerHTML = snap.empty ? `<p class="text-center text-gray-500 text-xs">No pending withdrawals</p>` : "";
+                
+                snap.forEach(d => {
+                    const w = d.data();
+                    const el = document.createElement('div');
+                    el.className = "bg-slate-900 p-3 rounded-lg border border-slate-700 text-xs flex flex-col gap-2";
+                    el.innerHTML = `
+                        <div class="flex justify-between font-bold text-white text-sm"><span>${w.method}</span><span>৳${w.amount}</span></div>
+                        <div class="bg-black/30 p-2 rounded text-emerald-400 font-mono text-center text-sm select-all cursor-pointer border border-emerald-500/20">${w.number}</div>
+                        <div class="text-gray-500 text-center">User: ${w.user_name} (${w.user_id})</div>
+                        <div class="flex gap-2 mt-1">
+                            <button onclick="window.admWd('${d.id}', '${w.user_id}', ${w.amount}, 'approve')" class="flex-1 bg-green-600 py-1.5 rounded text-white font-bold hover:bg-green-500">Paid</button>
+                            <button onclick="window.admWd('${d.id}', '${w.user_id}', ${w.amount}, 'reject')" class="flex-1 bg-red-600 py-1.5 rounded text-white font-bold hover:bg-red-500">Refund</button>
+                        </div>
+                    `;
+                    list.appendChild(el);
+                });
+            });
+        }
+
+        window.admTask = async (tid, uid, price, action) => {
+            if(!confirm(`Are you sure to ${action}?`)) return;
+            try {
+                if(action === 'approve') {
+                    await runTransaction(db, async (txn) => {
+                        txn.update(doc(db, "users", uid), { balance: increment(price), total_tasks: increment(1) });
+                        txn.update(doc(db, "tasks", tid), { status: "approved", approved_at: Timestamp.now() });
+                    });
+                } else {
+                    await updateDoc(doc(db, "tasks", tid), { status: "rejected" });
+                }
+                showToast("Task updated!", "success");
+            } catch(e) { showToast(e, "error"); }
+        };
+
+        window.admWd = async (wid, uid, amount, action) => {
+            if(!confirm(`Are you sure to ${action}?`)) return;
+            try {
+                if(action === 'approve') {
+                    await updateDoc(doc(db, "withdrawals", wid), { status: "approved" });
+                } else {
+                    await runTransaction(db, async (txn) => {
+                        txn.update(doc(db, "users", uid), { balance: increment(amount) });
+                        txn.update(doc(db, "withdrawals", wid), { status: "rejected" });
+                    });
+                }
+                showToast("Withdrawal updated!", "success");
+            } catch(e) { showToast(e, "error"); }
+        };
+
+        // --- UTILS ---
+        
+        // Load User Stats (Approved/Pending/Rejected)
+        function loadUserStats(uid) {
+            const q = query(collection(db, "tasks"), where("user_id", "==", uid));
+            onSnapshot(q, (snap) => {
+                let approved = 0;
+                let pending = 0;
+                let rejected = 0;
+
+                snap.forEach(doc => {
+                    const status = doc.data().status;
+                    if(status === 'approved') approved++;
+                    else if(status === 'pending') pending++;
+                    else if(status === 'rejected') rejected++;
+                });
+
+                if(document.getElementById('stat-approved')) {
+                    document.getElementById('stat-approved').innerText = approved;
+                    document.getElementById('stat-pending').innerText = pending;
+                    document.getElementById('stat-rejected').innerText = rejected;
+                }
+            });
+        }
+
+        // Load History (Safe Mode)
+        function loadHistory(uid) {
+            const list = document.getElementById('home-history-list');
+            
+            // Try query with ordering (Require Index)
+            try {
+                const q = query(collection(db, "tasks"), where("user_id", "==", uid), orderBy("submitted_at", "desc"), limit(10));
+                
+                onSnapshot(q, (snap) => {
+                    renderHistory(snap, list);
+                }, (error) => {
+                    // Fallback if index missing
+                    console.log("Index missing, falling back to simple query", error);
+                    const fallbackQ = query(collection(db, "tasks"), where("user_id", "==", uid), limit(10));
+                    onSnapshot(fallbackQ, (snap) => renderHistory(snap, list));
+                    
+                    if(error.code === 'failed-precondition') {
+                         console.error("⚠️ PLEASE CREATE INDEX IN FIREBASE CONSOLE LINK ABOVE");
+                    }
+                });
+            } catch(e) { console.log(e); }
+        }
+
+        function renderHistory(snap, list) {
+            if(snap.empty) {
+                list.innerHTML = `<div class="text-center text-gray-500 text-xs py-4">No recent history</div>`;
+                return;
+            }
+            list.innerHTML = "";
+            snap.forEach(d => {
+                const t = d.data();
+                const statusColor = t.status === 'approved' ? 'text-green-400' : (t.status === 'rejected' ? 'text-red-400' : 'text-yellow-400');
+                const icon = t.status === 'approved' ? 'fa-check-circle' : (t.status === 'rejected' ? 'fa-times-circle' : 'fa-clock');
+                
+                list.innerHTML += `
+                    <div class="bg-slate-800 p-3 rounded-xl border border-slate-700 flex justify-between items-center shadow-sm">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs text-gray-400">
+                                <i class="fa-solid fa-mobile-screen"></i>
+                            </div>
+                            <div>
+                                <p class="text-xs font-bold text-gray-200">${t.review_name}</p>
+                                <p class="text-[10px] text-gray-500">${t.status.toUpperCase()}</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm font-bold text-white">৳${t.price}</p>
+                            <i class="fa-solid ${icon} ${statusColor} text-xs"></i>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        window.previewImage = (input) => {
+            if (input.files && input.files[0]) {
+                var reader = new FileReader();
+                reader.onload = function (e) {
+                    document.getElementById('img-preview').src = e.target.result;
+                    document.getElementById('img-preview').classList.remove('hidden');
+                    document.getElementById('upload-placeholder').classList.add('hidden');
+                };
+                reader.readAsDataURL(input.files[0]);
+            }
+        };
+
+        window.navTo = (id) => {
+            document.querySelectorAll('.view-section').forEach(v => v.classList.add('hidden'));
+            document.getElementById(id).classList.remove('hidden');
+            document.querySelectorAll('.bottom-nav-item').forEach(b => {
+                b.classList.remove('active', 'text-blue-500');
+                b.classList.add('text-gray-400');
+            });
+            
+            // Set active state for bottom nav
+            if(id === 'view-home') document.querySelectorAll('.bottom-nav-item')[0].classList.add('active', 'text-blue-500');
+            if(id === 'view-tasks') document.querySelectorAll('.bottom-nav-item')[1].classList.add('active', 'text-blue-500');
+            if(id === 'view-withdraw') document.querySelectorAll('.bottom-nav-item')[2].classList.add('active', 'text-blue-500');
+            if(id === 'view-profile') document.querySelectorAll('.bottom-nav-item')[3].classList.add('active', 'text-blue-500');
+        };
+
+        window.logout = (msg) => {
+            localStorage.removeItem('tbot_uid');
+            localStorage.removeItem('tbot_device_id');
+            if(msg) alert(msg);
+            location.reload();
+        };
+
+        window.copyRef = (id) => {
+            const copyText = document.getElementById(id);
+            copyText.select();
+            copyText.setSelectionRange(0, 99999);
+            navigator.clipboard.writeText(copyText.value);
+            showToast("রেফার লিংক কপি হয়েছে!", "success");
+        };
+
+        function showToast(msg, type) {
+            const toast = document.getElementById('toast');
+            const icon = document.getElementById('toast-icon');
+            const txt = document.getElementById('toast-msg');
+            
+            txt.innerText = msg;
+            icon.className = type === 'success' ? "fa-solid fa-circle-check text-green-500" : "fa-solid fa-circle-exclamation text-red-500";
+            
+            toast.classList.remove('opacity-0', 'translate-y-[-20px]');
+            setTimeout(() => toast.classList.add('opacity-0', 'translate-y-[-20px]'), 3000);
+        }
+
+        function convertTo12Hour(time) {
+            const [h, m] = time.split(':');
+            return new Date(0, 0, 0, h, m).toLocaleTimeString('en-US', {hour: 'numeric', minute:'numeric', hour12: true});
+        }
+
+        // Start App
+        init();
+
+    </script>
+</body>
+</html>
